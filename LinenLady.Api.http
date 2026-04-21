@@ -1,0 +1,10 @@
+@baseUrl = http://localhost:5152
+
+### Health check
+GET {{baseUrl}}/api/health
+Accept: application/json
+
+GET {{baseUrl}}/weatherforecast/
+Accept: application/json
+
+###
