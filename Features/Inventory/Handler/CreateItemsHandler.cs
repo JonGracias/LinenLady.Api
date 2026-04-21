@@ -4,7 +4,7 @@ using Azure.Storage.Sas;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using LinenLady.API.Keywords;
-using static LinenLady.API.Contracts.CreateItemsContracts;
+using LinenLady.API.Contracts;
 using NanoidDotNet;
 
 namespace LinenLady.API.Inventory.Items.Handler;

@@ -1,48 +1,82 @@
-using LinenLady.API.Inventory.Images.Sql;
-using LinenLady.API.Inventory.Sql;
-using LinenLady.API.Site.Media.Sql;
+using LinenLady.API.AI.Client;
+using LinenLady.API.AI.Embeddings.Service;
+using LinenLady.API.AI.Keywords.Service;
+using LinenLady.API.AI.Options;
+using LinenLady.API.AI.Prefill.Service;
+using LinenLady.API.AI.Rewrite.Service;
+using LinenLady.API.AI.Seo.Service;
+using LinenLady.API.Api.Filters;
+using LinenLady.API.BackgroundServices;
+using LinenLady.API.Blob.Options;
 using LinenLady.API.Customer.Sql;
+using LinenLady.API.Customers.Handler;
+using LinenLady.API.Inventory.AiMeta.Sql;
+using LinenLady.API.Inventory.Images.Handler;
+using LinenLady.API.Inventory.Images.Sql;
+using LinenLady.API.Inventory.Items.Handler;
+using LinenLady.API.Inventory.Sql;
+using LinenLady.API.Search.Handler;
+using LinenLady.API.Site.Blob;
+using LinenLady.API.Site.Handler;
+using LinenLady.API.Site.Sql;
+using LinenLady.API.Square;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-var sqlConnStr = builder.Configuration["SQL_CONNECTION_STRING"]
-    ?? throw new InvalidOperationException("Missing SQL_CONNECTION_STRING");
-var aoaiEndpoint = builder.Configuration["AZURE_OPENAI_ENDPOINT"]
-    ?? throw new InvalidOperationException("Missing AZURE_OPENAI_ENDPOINT");
-var aoaiKey = builder.Configuration["AZURE_OPENAI_KEY"]
-    ?? throw new InvalidOperationException("Missing AZURE_OPENAI_API_KEY");
-var aoaiDeployment = builder.Configuration["AZURE_OPENAI_DEPLOYMENT"]
-    ?? throw new InvalidOperationException("Missing AZURE_OPENAI_DEPLOYMENT");
-var aoaiVersion = builder.Configuration["AZURE_OPENAI_API_VERSION"]
-    ?? throw new InvalidOperationException("Missing AZURE_OPENAI_VERSION");
+// ─── Connection string fallback ──────────────────────────────────────────────
+// Support both the legacy env-var style (SQL_CONNECTION_STRING) used by the
+// old Functions app and the conventional ConnectionStrings:Sql configuration
+// slot that all the new repositories read from. If only the env-var form is
+// set, promote it into the ConnectionStrings:Sql slot at startup.
+var envSqlConn = builder.Configuration["SQL_CONNECTION_STRING"];
+if (!string.IsNullOrWhiteSpace(envSqlConn) &&
+    string.IsNullOrWhiteSpace(builder.Configuration.GetConnectionString("Sql")))
+{
+    builder.Configuration["ConnectionStrings:Sql"] = envSqlConn;
+}
 
-// Infrastructure
-builder.Services.AddScoped<IInventoryRepository>(_ => new InventoryRepository(sqlConnStr));
-builder.Services.AddScoped<IInventoryImageRepository>(_ => new InventoryImageRepository(sqlConnStr));
-builder.Services.AddScoped<IInventoryImagesQuery>(_ => new InventoryImagesQuery(sqlConnStr));
-builder.Services.AddScoped<ISiteRepository>(_ => new SiteRepository(sqlConnStr));
+// ─── Options binding ─────────────────────────────────────────────────────────
+builder.Services.Configure<AzureOpenAiOptions>(
+    builder.Configuration.GetSection(AzureOpenAiOptions.SectionName));
+builder.Services.Configure<BlobStorageOptions>(
+    builder.Configuration.GetSection(BlobStorageOptions.SectionName));
 
-// Application - Items
+// ─── AI: shared clients ──────────────────────────────────────────────────────
+// Both clients receive HttpClient via IHttpClientFactory so retry/timeout
+// policies can be layered on later without touching the services themselves.
+builder.Services.AddHttpClient<AzureOpenAiChatClient>();
+builder.Services.AddHttpClient<AzureOpenAiEmbeddingsClient>();
+
+// ─── AI: features ────────────────────────────────────────────────────────────
+builder.Services.AddScoped<IAiPrefillService, AiPrefillService>();
+builder.Services.AddScoped<IAiRewriteService, AiRewriteService>();
+builder.Services.AddScoped<IAiEmbeddingsService, AiEmbeddingsService>();
+builder.Services.AddScoped<IAiKeywordsService, AiKeywordsService>();
+builder.Services.AddScoped<IAiSeoService, AiSeoService>();
+
+// ─── Inventory: items ────────────────────────────────────────────────────────
+builder.Services.AddScoped<IInventoryRepository, InventoryRepository>();
+builder.Services.AddScoped<IInventoryAiMetaRepository, InventoryAiMetaRepository>();
+builder.Services.AddScoped<GetItemsHandler>();
 builder.Services.AddScoped<CreateItemsHandler>();
 builder.Services.AddScoped<UpdateItemHandler>();
 builder.Services.AddScoped<SoftDeleteItemHandler>();
-builder.Services.AddSingleton<IAiRewriteService>(_ => new AiRewriteService(aoaiEndpoint, aoaiKey, aoaiDeployment, aoaiVersion));
 
-// Application - Images
-builder.Services.AddScoped<AddImagesHandler>();
+// ─── Inventory: images ───────────────────────────────────────────────────────
+builder.Services.AddScoped<IInventoryImageRepository, InventoryImageRepository>();
+builder.Services.AddScoped<IInventoryImagesQuery, InventoryImagesQuery>();
 builder.Services.AddScoped<GetImagesHandler>();
-builder.Services.AddScoped<SetPrimaryImageHandler>();
-builder.Services.AddScoped<ReplaceImageHandler>();
+builder.Services.AddScoped<AddImagesHandler>();
 builder.Services.AddScoped<NewBlobUrlHandler>();
 builder.Services.AddScoped<DeleteImageHandler>();
+builder.Services.AddScoped<ReplaceImageHandler>();
+builder.Services.AddScoped<SetPrimaryImageHandler>();
 
-// Application - Keywords / Search
-builder.Services.AddScoped<GenerateKeywordsHandler>();
-builder.Services.AddScoped<GenerateSeoHandler>();
+// ─── Search ──────────────────────────────────────────────────────────────────
 builder.Services.AddScoped<SimilarItemsHandler>();
 
-// Application - Customers
+// ─── Customers / reservations / messages ─────────────────────────────────────
+builder.Services.AddScoped<ICustomerRepository, CustomerRepository>();
 builder.Services.AddScoped<SyncCustomerHandler>();
 builder.Services.AddScoped<GetMyProfileHandler>();
 builder.Services.AddScoped<UpdateProfileHandler>();
@@ -55,52 +89,39 @@ builder.Services.AddScoped<SquareWebhookHandler>();
 builder.Services.AddScoped<ExpireReservationsHandler>();
 builder.Services.AddScoped<MessageHandler>();
 
-// Application - Site
-builder.Services.AddSingleton<SiteMediaService>();
-builder.Services.AddScoped<ListSiteMediaHandler>();
-builder.Services.AddScoped<CreateSiteMediaHandler>();
-builder.Services.AddScoped<DeleteSiteMediaHandler>();
-builder.Services.AddScoped<ListSiteConfigHandler>();
-builder.Services.AddScoped<GetSiteConfigHandler>();
-builder.Services.AddScoped<SetSiteConfigHandler>();
-builder.Services.AddScoped<ListHeroSlidesHandler>();
-builder.Services.AddScoped<CreateHeroSlideHandler>();
-builder.Services.AddScoped<UpdateHeroSlideHandler>();
-builder.Services.AddScoped<DeleteHeroSlideHandler>();
-builder.Services.AddScoped<ReorderHeroSlidesHandler>();
-
 // Square
 builder.Services.AddHttpClient("square");
 builder.Services.AddScoped<ISquareService, SquareService>();
 
+// Background job: hourly reservation expiration (replaces the old timer-trigger)
+builder.Services.AddHostedService<ExpireReservationsBackgroundService>();
 
+// ─── Site ────────────────────────────────────────────────────────────────────
+builder.Services.AddScoped<ISiteRepository, SiteRepository>();
+builder.Services.AddScoped<SiteMediaSasService>();
+builder.Services.AddScoped<SiteMediaHandler>();
+builder.Services.AddScoped<SiteConfigHandler>();
+builder.Services.AddScoped<SiteHeroHandler>();
 
-
-
-
-
-
-
-
-
-builder.Services.AddControllers();
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
+// ─── MVC + global exception filter ───────────────────────────────────────────
+builder.Services.AddControllers(options =>
+{
+    options.Filters.Add<DomainExceptionFilter>();
+});
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
+// ─── Pipeline ────────────────────────────────────────────────────────────────
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
-//app.UseHttpsRedirection();
-
+// app.UseHttpsRedirection();
 app.UseAuthorization();
-
 app.MapControllers();
 
 app.Run();

@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("LinenLady.Api")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+a8d42fcd010c56c05f5319ecebe8cf8355b5265d")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+21034457c6d02db9b2e1282d7201a69219dbcc58")]
 [assembly: System.Reflection.AssemblyProductAttribute("LinenLady.Api")]
 [assembly: System.Reflection.AssemblyTitleAttribute("LinenLady.Api")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

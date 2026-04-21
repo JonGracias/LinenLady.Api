@@ -8,13 +8,3 @@ public sealed class InventoryImageDto
     public int SortOrder { get; set; }
     public string? ReadUrl { get; set; }
 }
-public sealed class ReadUrlsRequest
-{
-    public List<string> Paths { get; set; } = new();
-    public int? TtlMinutes { get; set; }
-}
-
-public sealed class ReadUrlsResponse
-{
-    public Dictionary<string, string> Urls { get; set; } = new();
-}

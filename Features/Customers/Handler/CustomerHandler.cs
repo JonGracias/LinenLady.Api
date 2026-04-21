@@ -1,23 +1,20 @@
-// Application/Customers/CustomerHandler.cs
-using Microsoft.Data.SqlClient;
-using LinenLady.API.Customer.Sql;
-using LinenLady.API.Square;
-using LinenLady.API.Contracts;
-
 namespace LinenLady.API.Customers.Handler;
 
-// ── Exceptions used for HTTP mapping in the Function layer ───
+using LinenLady.API.Contracts;
+using LinenLady.API.Customer.Sql;
+using LinenLady.API.Square;
 
-public sealed class CustomerNotFoundException  : Exception { public CustomerNotFoundException(string m) : base(m) {} }
-public sealed class EmailNotVerifiedException  : Exception { public EmailNotVerifiedException(string m)  : base(m) {} }
+// ── Exceptions ───────────────────────────────────────────────
+
+public sealed class CustomerNotFoundException    : Exception { public CustomerNotFoundException(string m)    : base(m) {} }
+public sealed class EmailNotVerifiedException    : Exception { public EmailNotVerifiedException(string m)    : base(m) {} }
 public sealed class ItemAlreadyReservedException : Exception { public ItemAlreadyReservedException(string m) : base(m) {} }
-public sealed class ItemNotFoundException      : Exception { public ItemNotFoundException(string m)      : base(m) {} }
+public sealed class ItemNotFoundException        : Exception { public ItemNotFoundException(string m)        : base(m) {} }
 public sealed class ReservationNotFoundException : Exception { public ReservationNotFoundException(string m) : base(m) {} }
 public sealed class ReservationConflictException : Exception { public ReservationConflictException(string m) : base(m) {} }
 
 // ─────────────────────────────────────────────────────────────
 
-/// <summary>Syncs a Clerk user into cust.Customer (called on sign-in).</summary>
 public sealed class SyncCustomerHandler
 {
     private readonly ICustomerRepository _repo;
@@ -26,7 +23,7 @@ public sealed class SyncCustomerHandler
     public SyncCustomerHandler(ICustomerRepository repo, ILogger<SyncCustomerHandler> log)
     {
         _repo = repo;
-        _log  = log;
+        _log = log;
     }
 
     public async Task<CustomerDto> HandleAsync(UpsertCustomerRequest req, CancellationToken ct)
@@ -44,11 +41,9 @@ public sealed class SyncCustomerHandler
 
 // ─────────────────────────────────────────────────────────────
 
-/// <summary>Returns full profile — customer, addresses, preferences, reservations.</summary>
 public sealed class GetMyProfileHandler
 {
     private readonly ICustomerRepository _repo;
-
     public GetMyProfileHandler(ICustomerRepository repo) => _repo = repo;
 
     public async Task<MyProfileResult> HandleAsync(string clerkUserId, CancellationToken ct)
@@ -73,11 +68,9 @@ public record MyProfileResult(
 
 // ─────────────────────────────────────────────────────────────
 
-/// <summary>Updates name / phone on the customer record.</summary>
 public sealed class UpdateProfileHandler
 {
     private readonly ICustomerRepository _repo;
-
     public UpdateProfileHandler(ICustomerRepository repo) => _repo = repo;
 
     public async Task<CustomerDto> HandleAsync(
@@ -93,11 +86,9 @@ public sealed class UpdateProfileHandler
 
 // ─────────────────────────────────────────────────────────────
 
-/// <summary>Add or update a shipping address.</summary>
 public sealed class UpsertAddressHandler
 {
     private readonly ICustomerRepository _repo;
-
     public UpsertAddressHandler(ICustomerRepository repo) => _repo = repo;
 
     public async Task<CustomerAddressDto> HandleAsync(
@@ -116,11 +107,9 @@ public sealed class UpsertAddressHandler
 
 // ─────────────────────────────────────────────────────────────
 
-/// <summary>Delete a shipping address.</summary>
 public sealed class DeleteAddressHandler
 {
     private readonly ICustomerRepository _repo;
-
     public DeleteAddressHandler(ICustomerRepository repo) => _repo = repo;
 
     public async Task<bool> HandleAsync(
@@ -135,11 +124,9 @@ public sealed class DeleteAddressHandler
 
 // ─────────────────────────────────────────────────────────────
 
-/// <summary>Replace all new-arrival alert preferences for the customer.</summary>
 public sealed class SetPreferencesHandler
 {
     private readonly ICustomerRepository _repo;
-
     public SetPreferencesHandler(ICustomerRepository repo) => _repo = repo;
 
     public async Task<List<CustomerPreferenceDto>> HandleAsync(
@@ -155,14 +142,10 @@ public sealed class SetPreferencesHandler
 
 // ─────────────────────────────────────────────────────────────
 
-/// <summary>
-/// Creates a reservation, immediately generates a Square payment link,
-/// and logs notifications. Core business logic for the reserve flow.
-/// </summary>
 public sealed class CreateReservationHandler
 {
     private readonly ICustomerRepository _repo;
-    private readonly ISquareService      _square;
+    private readonly ISquareService _square;
     private readonly ILogger<CreateReservationHandler> _log;
 
     public CreateReservationHandler(
@@ -170,15 +153,14 @@ public sealed class CreateReservationHandler
         ISquareService square,
         ILogger<CreateReservationHandler> log)
     {
-        _repo   = repo;
+        _repo = repo;
         _square = square;
-        _log    = log;
+        _log = log;
     }
 
     public async Task<ReservationDto> HandleAsync(
         string clerkUserId, CreateReservationRequest req, CancellationToken ct)
     {
-        // 1) Resolve customer
         var customer = await _repo.GetByClerkIdAsync(clerkUserId)
             ?? throw new CustomerNotFoundException("Profile not found.");
 
@@ -186,20 +168,17 @@ public sealed class CreateReservationHandler
             throw new EmailNotVerifiedException(
                 "Email verification required before reserving an item.");
 
-        // 2) Check item is not already held
-        var alreadyReserved = await _repo.IsItemReservedAsync(req.InventoryId);
-        if (alreadyReserved)
+        if (await _repo.IsItemReservedAsync(req.InventoryId))
             throw new ItemAlreadyReservedException(
                 "This item is currently reserved by another customer.");
 
-        // 3) Fetch item price
-        int amountCents = await GetItemPriceCentsAsync(req.InventoryId, ct);
+        // Repo-backed price lookup — replaces the old env-var SQL call
+        var amountCents = await _repo.GetAvailableItemPriceCentsAsync(req.InventoryId)
+            ?? throw new ItemNotFoundException($"Item {req.InventoryId} not found or unavailable.");
 
-        // 4) Create reservation row (status = Pending, expires +48h)
-        var reservation = await _repo.CreateReservationAsync(
-            customer.CustomerId, req, amountCents);
+        var reservation = await _repo.CreateReservationAsync(customer.CustomerId, req, amountCents);
 
-        // 5) Generate Square payment link — non-fatal on failure
+        // Square payment link — non-fatal on failure
         try
         {
             var link = await _square.CreatePaymentLinkAsync(
@@ -211,8 +190,7 @@ public sealed class CreateReservationHandler
                 customerName:  $"{customer.FirstName} {customer.LastName}".Trim()
             );
 
-            reservation = await _repo.SetPaymentLinkAsync(
-                reservation.ReservationId, link) ?? reservation;
+            reservation = await _repo.SetPaymentLinkAsync(reservation.ReservationId, link) ?? reservation;
 
             await _repo.LogNotificationAsync(
                 customer.CustomerId, reservation.ReservationId, "PaymentLinkSent", true);
@@ -236,37 +214,13 @@ public sealed class CreateReservationHandler
 
         return reservation;
     }
-
-    private static async Task<int> GetItemPriceCentsAsync(int inventoryId, CancellationToken ct)
-    {
-        var connStr = Environment.GetEnvironmentVariable("SQL_CONNECTION_STRING")
-            ?? throw new InvalidOperationException("Missing SQL_CONNECTION_STRING.");
-
-        using var conn = new SqlConnection(connStr);
-        await conn.OpenAsync(ct);
-
-        using var cmd = new SqlCommand(
-            """
-            SELECT UnitPriceCents FROM inv.Inventory
-            WHERE InventoryId = @Id AND IsActive = 1 AND IsDeleted = 0
-            """, conn);
-        cmd.Parameters.Add("@Id", System.Data.SqlDbType.Int).Value = inventoryId;
-
-        var result = await cmd.ExecuteScalarAsync(ct);
-        if (result is null or DBNull)
-            throw new ItemNotFoundException($"Item {inventoryId} not found or unavailable.");
-
-        return Convert.ToInt32(result);
-    }
 }
 
 // ─────────────────────────────────────────────────────────────
 
-/// <summary>Cancel a reservation (customer-initiated).</summary>
 public sealed class CancelReservationHandler
 {
     private readonly ICustomerRepository _repo;
-
     public CancelReservationHandler(ICustomerRepository repo) => _repo = repo;
 
     public async Task<ReservationDto> HandleAsync(
@@ -292,7 +246,6 @@ public sealed class CancelReservationHandler
 
 // ─────────────────────────────────────────────────────────────
 
-/// <summary>Handles inbound Square webhook — marks reservation Completed on payment.</summary>
 public sealed class SquareWebhookHandler
 {
     private readonly ICustomerRepository _repo;
@@ -301,14 +254,14 @@ public sealed class SquareWebhookHandler
     public SquareWebhookHandler(ICustomerRepository repo, ILogger<SquareWebhookHandler> log)
     {
         _repo = repo;
-        _log  = log;
+        _log = log;
     }
 
     public async Task HandleAsync(string rawBody, CancellationToken ct)
     {
-        using var doc  = System.Text.Json.JsonDocument.Parse(rawBody);
-        var root       = doc.RootElement;
-        var eventType  = root.GetProperty("type").GetString();
+        using var doc = System.Text.Json.JsonDocument.Parse(rawBody);
+        var root = doc.RootElement;
+        var eventType = root.GetProperty("type").GetString();
 
         if (eventType != "payment.completed" && eventType != "order.fulfillment.updated")
             return;
@@ -334,7 +287,6 @@ public sealed class SquareWebhookHandler
 
 // ─────────────────────────────────────────────────────────────
 
-/// <summary>Timer-triggered: expire stale reservations hourly.</summary>
 public sealed class ExpireReservationsHandler
 {
     private readonly ICustomerRepository _repo;
@@ -345,7 +297,7 @@ public sealed class ExpireReservationsHandler
         ILogger<ExpireReservationsHandler> log)
     {
         _repo = repo;
-        _log  = log;
+        _log = log;
     }
 
     public async Task<int> HandleAsync(CancellationToken ct)
@@ -359,11 +311,9 @@ public sealed class ExpireReservationsHandler
 
 // ─────────────────────────────────────────────────────────────
 
-/// <summary>Get + send messages between customer and Noemi.</summary>
 public sealed class MessageHandler
 {
     private readonly ICustomerRepository _repo;
-
     public MessageHandler(ICustomerRepository repo) => _repo = repo;
 
     public async Task<List<MessageDto>> GetAsync(string clerkUserId, CancellationToken ct)

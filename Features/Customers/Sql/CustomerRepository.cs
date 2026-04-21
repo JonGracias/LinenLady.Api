@@ -1,10 +1,9 @@
-// Infrastructure/Sql/CustomerRepository.cs
+namespace LinenLady.API.Customer.Sql;
+
 using System.Data;
 using Dapper;
 using LinenLady.API.Contracts;
 using Microsoft.Data.SqlClient;
-
-namespace LinenLady.API.Customer.Sql;
 
 public interface ICustomerRepository
 {
@@ -22,10 +21,11 @@ public interface ICustomerRepository
     Task<ReservationDto?>          GetReservationAsync(int reservationId);
     Task<List<ReservationDto>>     GetCustomerReservationsAsync(int customerId);
     Task<bool>                     IsItemReservedAsync(int inventoryId);
+    Task<int?>                     GetAvailableItemPriceCentsAsync(int inventoryId); // NEW
     Task<ReservationDto>           CreateReservationAsync(int customerId, CreateReservationRequest req, int amountCents);
     Task<ReservationDto?>          UpdateReservationStatusAsync(int reservationId, string status);
     Task<ReservationDto?>          SetPaymentLinkAsync(int reservationId, SquarePaymentLinkResult link);
-    Task<int>                      ExpireReservationsAsync(); // returns count expired
+    Task<int>                      ExpireReservationsAsync();
 
     Task<List<MessageDto>>  GetMessagesAsync(int customerId, int? reservationId = null);
     Task<MessageDto>        SendMessageAsync(int customerId, SendMessageRequest req, string direction = "Inbound");
@@ -38,9 +38,10 @@ public class CustomerRepository : ICustomerRepository
 {
     private readonly string _connectionString;
 
-    public CustomerRepository(string connectionString)
+    public CustomerRepository(IConfiguration configuration)
     {
-        _connectionString = connectionString;
+        _connectionString = configuration.GetConnectionString("Sql")
+            ?? throw new InvalidOperationException("Missing connection string 'Sql'.");
     }
 
     private IDbConnection Connect() => new SqlConnection(_connectionString);
@@ -128,7 +129,6 @@ public class CustomerRepository : ICustomerRepository
     {
         using var db = Connect();
 
-        // If setting as default, clear other defaults first
         if (req.IsDefault)
         {
             await db.ExecuteAsync(
@@ -203,15 +203,14 @@ public class CustomerRepository : ICustomerRepository
     public async Task SetPreferencesAsync(int customerId, List<string> categories)
     {
         using var db = Connect();
+        db.Open();
         using var tx = db.BeginTransaction();
         try
         {
-            // Delete removed categories
             await db.ExecuteAsync(
                 "DELETE FROM cust.CustomerPreference WHERE CustomerId = @CustomerId",
                 new { CustomerId = customerId }, tx);
 
-            // Insert current set
             foreach (var cat in categories.Distinct())
             {
                 await db.ExecuteAsync(
@@ -279,6 +278,17 @@ public class CustomerRepository : ICustomerRepository
         return count > 0;
     }
 
+    public async Task<int?> GetAvailableItemPriceCentsAsync(int inventoryId)
+    {
+        using var db = Connect();
+        return await db.ExecuteScalarAsync<int?>(
+            """
+            SELECT UnitPriceCents FROM inv.Inventory
+            WHERE InventoryId = @Id AND IsActive = 1 AND IsDeleted = 0
+            """,
+            new { Id = inventoryId });
+    }
+
     public async Task<ReservationDto> CreateReservationAsync(
         int customerId, CreateReservationRequest req, int amountCents)
     {
@@ -308,10 +318,10 @@ public class CustomerRepository : ICustomerRepository
         using var db = Connect();
         var setClause = status switch
         {
-            "Completed"  => ", CompletedAt  = SYSUTCDATETIME()",
-            "PaymentSent"=> ", PaymentSentAt = SYSUTCDATETIME()",
-            "Cancelled"  => ", CancelledAt  = SYSUTCDATETIME()",
-            _            => ""
+            "Completed"   => ", CompletedAt   = SYSUTCDATETIME()",
+            "PaymentSent" => ", PaymentSentAt = SYSUTCDATETIME()",
+            "Cancelled"   => ", CancelledAt   = SYSUTCDATETIME()",
+            _             => ""
         };
 
         return await db.QueryFirstOrDefaultAsync<ReservationDto>(

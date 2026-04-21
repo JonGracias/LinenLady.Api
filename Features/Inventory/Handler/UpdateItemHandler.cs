@@ -1,10 +1,9 @@
-// Application/Items/UpdateItemHandler.cs
+namespace LinenLady.API.Inventory.Items.Handler;
+
+using LinenLady.API.AI.Rewrite.Service;
 using LinenLady.API.Contracts;
 using LinenLady.API.Inventory.Images.Sql;
 using LinenLady.API.Inventory.Sql;
-using LinenLady.API.AI.Rewrite.Service;
-
-namespace LinenLady.API.Inventory.Items.Handler;
 
 public sealed class UpdateItemHandler
 {
@@ -17,7 +16,7 @@ public sealed class UpdateItemHandler
         IInventoryImageRepository imageRepo,
         IAiRewriteService aiService)
     {
-        _repo      = repo;
+        _repo = repo;
         _imageRepo = imageRepo;
         _aiService = aiService;
     }
@@ -33,12 +32,12 @@ public sealed class UpdateItemHandler
             return (UpdateItemResult.NotFound, null);
 
         // 2. Resolve updated field values (null = keep current)
-        var name       = request.Name        ?? current.Name;
-        var description = request.Description ?? current.Description;
+        var name        = request.Name           ?? current.Name;
+        var description = request.Description    ?? current.Description;
         var priceCents  = request.UnitPriceCents ?? current.UnitPriceCents;
         var quantity    = request.QuantityOnHand ?? current.QuantityOnHand;
-        var isActive    = request.IsActive    ?? current.IsActive;
-        var isFeatured  = request.IsFeatured  ?? current.IsFeatured;
+        var isActive    = request.IsActive       ?? current.IsActive;
+        var isFeatured  = request.IsFeatured     ?? current.IsFeatured;
 
         // Publishing clears the draft flag
         var isDraft = current.IsDraft;
@@ -89,7 +88,7 @@ public sealed class UpdateItemHandler
         }
 
         // 5. Persist
-        var updated = await _repo.Update(inventoryId, new UpdateItemRequest
+        var updated = await _repo.Update(inventoryId, new UpdateItemFields
         {
             Name           = name,
             Description    = description,

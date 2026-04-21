@@ -1,9 +1,7 @@
-// /Application/Search/SimilarItemsHandler.cs
+namespace LinenLady.API.Search.Handler;
+
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
-using Microsoft.Extensions.Logging;
-
-namespace LinenLady.API.Search;
 
 public record SimilarItemResult(
     int     InventoryId,
@@ -13,17 +11,17 @@ public record SimilarItemResult(
     int     UnitPriceCents,
     bool    IsActive,
     bool    IsDraft,
-    double  Score
-);
-
-
+    double  Score);
 
 public sealed class SimilarItemsHandler
 {
+    private readonly string _connStr;
     private readonly ILogger<SimilarItemsHandler> _logger;
 
-    public SimilarItemsHandler(ILogger<SimilarItemsHandler> logger)
+    public SimilarItemsHandler(IConfiguration configuration, ILogger<SimilarItemsHandler> logger)
     {
+        _connStr = configuration.GetConnectionString("Sql")
+            ?? throw new InvalidOperationException("Missing connection string 'Sql'.");
         _logger = logger;
     }
 
@@ -37,18 +35,15 @@ public sealed class SimilarItemsHandler
         if (inventoryId <= 0) throw new ArgumentException("Invalid id.");
         if (top is < 1 or > 100) top = 10;
 
-        var connStr = Environment.GetEnvironmentVariable("SQL_CONNECTION_STRING")
-            ?? throw new InvalidOperationException("Missing SQL_CONNECTION_STRING.");
-
-        // 1. Load the source item's vector
-        var sourceVector = await LoadVectorAsync(connStr, inventoryId, ct);
+        // 1. Load source vector
+        var sourceVector = await LoadVector(inventoryId, ct);
         if (sourceVector is null)
         {
             _logger.LogWarning("No vector found for item {Id}.", inventoryId);
             return Array.Empty<SimilarItemResult>();
         }
 
-        // 2. Load candidate items' vectors + metadata in one query
+        // 2. Load candidates
         var sql = $"""
             SELECT
                 i.InventoryId,
@@ -71,7 +66,7 @@ public sealed class SimilarItemsHandler
 
         try
         {
-            using var conn = new SqlConnection(connStr);
+            using var conn = new SqlConnection(_connStr);
             await conn.OpenAsync(ct);
 
             using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
@@ -92,10 +87,8 @@ public sealed class SimilarItemsHandler
                         UnitPriceCents: r.GetInt32(4),
                         IsActive:       r.GetBoolean(5),
                         IsDraft:        r.GetBoolean(6),
-                        Score:          0
-                    ),
-                    vector
-                ));
+                        Score:          0),
+                    vector));
             }
         }
         catch (SqlException ex)
@@ -109,14 +102,13 @@ public sealed class SimilarItemsHandler
 
         return candidates
             .Select(c => c.Meta with { Score = CosineSimilarity(sourceVector, c.Vector) })
-            .Where(x => x.Score >= minScore)   // ← filter before take
+            .Where(x => x.Score >= minScore)
             .OrderByDescending(x => x.Score)
             .Take(top)
             .ToList();
-            }
+    }
 
-    private static async Task<float[]?> LoadVectorAsync(
-        string connStr, int inventoryId, CancellationToken ct)
+    private async Task<float[]?> LoadVector(int inventoryId, CancellationToken ct)
     {
         const string sql = """
             SELECT TOP (1) VectorJson
@@ -125,7 +117,7 @@ public sealed class SimilarItemsHandler
               AND VectorPurpose = 'item_text';
             """;
 
-        using var conn = new SqlConnection(connStr);
+        using var conn = new SqlConnection(_connStr);
         await conn.OpenAsync(ct);
 
         using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
@@ -146,7 +138,7 @@ public sealed class SimilarItemsHandler
     {
         if (a.Length != b.Length) return 0;
         double dot = 0, magA = 0, magB = 0;
-        for (int i = 0; i < a.Length; i++)
+        for (var i = 0; i < a.Length; i++)
         {
             dot  += a[i] * b[i];
             magA += a[i] * a[i];
