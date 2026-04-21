@@ -2,11 +2,9 @@ using System.Text;
 using System.Text.Json;
 using Azure.Storage.Blobs;
 using Azure.Storage.Sas;
-using LinenLady.Inventory.Api.Contracts;
-using LinenLady.Inventory.Api.Contracts.Requests;
-using LinenLady.Inventory.Api.Options;
-using LinenLady.Inventory.Api.Services.Interfaces;
-using LinenLady.Inventory.Functions.Contracts;
+using LinenLady.API.AI.Blob.Options;
+using LinenLady.API.AI.Options;
+using LinenLady.API.Contracts;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Options;
 

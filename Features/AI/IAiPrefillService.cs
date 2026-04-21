@@ -1,6 +1,5 @@
-using LinenLady.Inventory.Api.Contracts;
-using LinenLady.Inventory.Api.Contracts.Requests;
-using LinenLady.Inventory.Functions.Contracts;
+
+using LinenLady.API.Contracts;
 
 namespace LinenLady.API.AI.Service;
 
