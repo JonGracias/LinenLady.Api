@@ -1,10 +1,10 @@
-// /Application/Items/CreateItemsHandler.cs
 using Azure.Storage.Blobs;
 using Azure.Storage.Sas;
-using Microsoft.Data.SqlClient;
-using Microsoft.Extensions.Logging;
-using LinenLady.API.Keywords;
+using LinenLady.API.AI.Keywords.Service;
+using LinenLady.API.Blob.Options;
 using LinenLady.API.Contracts;
+using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Options;
 using NanoidDotNet;
 
 namespace LinenLady.API.Inventory.Items.Handler;
@@ -23,44 +23,43 @@ static class Sku
 
 /// <summary>
 /// Creates a draft item (inv.Inventory) and returns SAS upload targets for images.
-/// After creation, triggers keyword + SEO generation directly via GenerateKeywordsHandler.
+/// After creation, kicks off keyword + SEO generation via IAiKeywordsService
+/// (resolved through a fresh DI scope so the fire-and-forget task doesn't depend
+/// on the request scope's lifetime).
 /// </summary>
 public sealed class CreateItemsHandler
 {
     private readonly ILogger<CreateItemsHandler> _logger;
-    private readonly GenerateKeywordsHandler _keywordsHandler;
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly string _sqlConnStr;
+    private readonly string _blobConnStr;
+    private readonly string _containerName;
 
     public CreateItemsHandler(
         ILogger<CreateItemsHandler> logger,
-        GenerateKeywordsHandler keywordsHandler)
+        IServiceScopeFactory scopeFactory,
+        IConfiguration configuration,
+        IOptions<BlobStorageOptions> blobOptions)
     {
-        _logger          = logger;
-        _keywordsHandler = keywordsHandler;
+        _logger = logger;
+        _scopeFactory = scopeFactory;
+
+        _sqlConnStr = configuration.GetConnectionString("Sql")
+            ?? throw new InvalidOperationException("Missing connection string 'Sql'.");
+
+        var opts = blobOptions.Value;
+        _blobConnStr = string.IsNullOrWhiteSpace(opts.ConnectionString)
+            ? throw new InvalidOperationException("Missing BlobStorage:ConnectionString.")
+            : opts.ConnectionString;
+
+        _containerName = string.IsNullOrWhiteSpace(opts.ImageContainerName)
+            ? "inventory-images"
+            : opts.ImageContainerName;
     }
 
     public async Task<CreateItemsResult> HandleAsync(CreateItemsRequest body, CancellationToken ct)
     {
-        // -----------------------------
-        // 1) Read environment config
-        // -----------------------------
-        var connStr = Environment.GetEnvironmentVariable("SQL_CONNECTION_STRING");
-        if (string.IsNullOrWhiteSpace(connStr))
-            throw new InvalidOperationException("Server misconfigured: missing SQL_CONNECTION_STRING.");
-
-        var storageConn =
-            Environment.GetEnvironmentVariable("BLOB_STORAGE_CONNECTION_STRING") ??
-            Environment.GetEnvironmentVariable("AzureWebJobsStorage");
-
-        if (string.IsNullOrWhiteSpace(storageConn))
-            throw new InvalidOperationException("Server misconfigured: missing storage connection string.");
-
-        var containerName =
-            Environment.GetEnvironmentVariable("IMAGE_CONTAINER_NAME") ??
-            "inventory-images";
-
-        // -----------------------------
-        // 2) Validate request + clamp
-        // -----------------------------
+        // 1) Validate request + clamp
         var files = body.Files;
         int requestedCount = (files is { Count: > 0 }) ? files.Count : (body.Count ?? 0);
         if (requestedCount <= 0)
@@ -68,12 +67,9 @@ public sealed class CreateItemsHandler
 
         int count = Math.Clamp(requestedCount, 1, 4);
 
-        // -----------------------------
-        // 3) Generate identifiers
-        // -----------------------------
+        // 2) Generate identifiers
         var publicId  = Guid.NewGuid();
         var publicIdN = publicId.ToString("N");
-       
 
         var name = string.IsNullOrWhiteSpace(body.TitleHint)
             ? "Draft"
@@ -83,9 +79,7 @@ public sealed class CreateItemsHandler
             ? null
             : body.Notes!.Trim();
 
-        // -----------------------------
-        // 4) Insert draft into SQL
-        // -----------------------------
+        // 3) Insert draft into SQL with SKU retry on unique-violation
         const string insertSql = @"
         INSERT INTO inv.Inventory (PublicId, Sku, Name, Description)
         OUTPUT INSERTED.InventoryId
@@ -97,14 +91,14 @@ public sealed class CreateItemsHandler
 
         try
         {
-            using var conn = new SqlConnection(connStr);
+            using var conn = new SqlConnection(_sqlConnStr);
             await conn.OpenAsync(ct);
 
             const int maxAttempts = 12;
 
             for (int attempt = 1; attempt <= maxAttempts; attempt++)
             {
-                sku = Sku.NewCode(7);            
+                sku = Sku.NewCode(7);
 
                 try
                 {
@@ -118,7 +112,7 @@ public sealed class CreateItemsHandler
 
                     inventoryId = Convert.ToInt32(await cmd.ExecuteScalarAsync(ct));
                     inserted = true;
-                    break; // ✅ success
+                    break;
                 }
                 catch (SqlException ex) when (Sku.IsUniqueViolation(ex) && attempt < maxAttempts)
                 {
@@ -135,16 +129,14 @@ public sealed class CreateItemsHandler
             throw new InvalidOperationException("Database error.");
         }
 
-        // -----------------------------
-        // 5) Generate SAS upload URLs
-        // -----------------------------
+        // 4) Generate SAS upload URLs
         var expiresOn = DateTimeOffset.UtcNow.AddMinutes(15);
 
         CreateItemsResult result;
         try
         {
-            var service   = new BlobServiceClient(storageConn);
-            var container = service.GetBlobContainerClient(containerName);
+            var service   = new BlobServiceClient(_blobConnStr);
+            var container = service.GetBlobContainerClient(_containerName);
             await container.CreateIfNotExistsAsync(cancellationToken: ct);
 
             var targets = new List<UploadTarget>(count);
@@ -162,7 +154,7 @@ public sealed class CreateItemsHandler
 
                 var sas = new BlobSasBuilder
                 {
-                    BlobContainerName = containerName,
+                    BlobContainerName = _containerName,
                     BlobName          = blobName,
                     Resource          = "b",
                     ExpiresOn         = expiresOn
@@ -187,7 +179,7 @@ public sealed class CreateItemsHandler
                 InventoryId:  inventoryId,
                 PublicId:     publicIdN,
                 Sku:          sku,
-                Container:    containerName,
+                Container:    _containerName,
                 ExpiresOnUtc: expiresOn.UtcDateTime,
                 Uploads:      targets
             );
@@ -203,23 +195,22 @@ public sealed class CreateItemsHandler
             throw new InvalidOperationException("Server error.");
         }
 
-        // -----------------------------
-        // 6) Kick off keywords + SEO
-        //    Non-fatal — runs after the result is ready to return.
-        //    Note: at this point only TitleHint/Notes are in the DB.
-        //    AI vision hasn't run yet so name/description may be minimal.
-        //    Keywords will be sparse now but will be regenerated automatically
-        //    after the frontend calls ai-vision and the user saves the item.
-        // -----------------------------
+        // 5) Kick off keywords + SEO (fire-and-forget, non-fatal)
+        //    Resolved in a fresh scope so the background task doesn't hold a
+        //    reference to the request scope after we return.
         _ = Task.Run(async () =>
         {
             try
             {
-                await _keywordsHandler.HandleAsync(inventoryId, null, CancellationToken.None);
+                using var scope = _scopeFactory.CreateScope();
+                var keywords = scope.ServiceProvider.GetRequiredService<IAiKeywordsService>();
+                await keywords.GenerateAsync(inventoryId, hint: null, CancellationToken.None);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Keywords/SEO generation failed for new item {Id} (non-fatal).", inventoryId);
+                _logger.LogWarning(ex,
+                    "Keywords/SEO generation failed for new item {Id} (non-fatal).",
+                    inventoryId);
             }
         });
 
