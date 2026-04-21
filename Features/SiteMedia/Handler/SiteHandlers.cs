@@ -1,6 +1,6 @@
 // Application/Site/SiteHandlers.cs
 using LinenLady.API.Contracts;
-using LinenLady.API.Inventory.Sql;
+using LinenLady.API.Site.Sql;
 
 namespace LinenLady.Inventory.Application.Site;
 
