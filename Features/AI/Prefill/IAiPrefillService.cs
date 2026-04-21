@@ -1,7 +1,6 @@
+namespace LinenLady.API.AI.Prefill.Service;
 
 using LinenLady.API.Contracts;
-
-namespace LinenLady.API.AI.Service;
 
 public interface IAiPrefillService
 {

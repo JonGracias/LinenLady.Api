@@ -1,34 +1,29 @@
+namespace LinenLady.API.AI.Prefill.Service;
+
 using System.Text;
-using System.Text.Json;
 using Azure.Storage.Blobs;
 using Azure.Storage.Sas;
-using LinenLady.API.AI.Blob.Options;
-using LinenLady.API.AI.Options;
+using LinenLady.API.AI.Client;
+using LinenLady.API.Blob.Options;
 using LinenLady.API.Contracts;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Options;
 
-namespace LinenLady.API.AI.Service;
-
 public sealed class AiPrefillService : IAiPrefillService
 {
-    private readonly ILogger<AiPrefillService> _logger;
-    private readonly HttpClient _httpClient;
+    private const int MaxResalePriceCents = 500_000; // $5,000 cap
+
     private readonly IConfiguration _configuration;
-    private readonly AzureOpenAiOptions _openAi;
+    private readonly AzureOpenAiChatClient _chat;
     private readonly BlobStorageOptions _blobOptions;
 
     public AiPrefillService(
-        ILogger<AiPrefillService> logger,
-        HttpClient httpClient,
         IConfiguration configuration,
-        IOptions<AzureOpenAiOptions> openAi,
+        AzureOpenAiChatClient chat,
         IOptions<BlobStorageOptions> blobOptions)
     {
-        _logger = logger;
-        _httpClient = httpClient;
         _configuration = configuration;
-        _openAi = openAi.Value;
+        _chat = chat;
         _blobOptions = blobOptions.Value;
     }
 
@@ -43,15 +38,13 @@ public sealed class AiPrefillService : IAiPrefillService
         var sqlConnStr = _configuration.GetConnectionString("Sql")
             ?? throw new InvalidOperationException("Missing connection string 'Sql'.");
 
-        // 0) Validate item exists and get its PublicId (blob prefix guard)
-        var publicId = await LoadPublicId(sqlConnStr, inventoryId, cancellationToken);
-        if (publicId is null)
-            return new PrefillOutcome(PrefillStatus.NotFound, null, "Item not found (missing PublicId).");
-
-        // 1) Load item + images
+        // 1) Load item + images (PublicId comes along in the same query)
         var item = await LoadItem(sqlConnStr, inventoryId, cancellationToken);
         if (item is null)
             return new PrefillOutcome(PrefillStatus.NotFound, null, "Item not found.");
+
+        if (item.PublicId is null)
+            return new PrefillOutcome(PrefillStatus.NotFound, null, "Item not found (missing PublicId).");
 
         if (item.Images.Count == 0)
             return new PrefillOutcome(PrefillStatus.NoImages, null, "Item has no images to analyze.");
@@ -66,7 +59,7 @@ public sealed class AiPrefillService : IAiPrefillService
         var container = blobService.GetBlobContainerClient(_blobOptions.ImageContainerName);
 
         var imageSasUrls = selectedImages
-            .Select(img => ToBlobName(img.ImagePath, _blobOptions.ImageContainerName, publicId.Value))
+            .Select(img => ToBlobName(img.ImagePath, _blobOptions.ImageContainerName, item.PublicId.Value))
             .Where(blobName => !string.IsNullOrWhiteSpace(blobName))
             .Select(blobName => MakeReadSas(container, blobName!, TimeSpan.FromMinutes(15)))
             .ToList();
@@ -76,11 +69,11 @@ public sealed class AiPrefillService : IAiPrefillService
             return new PrefillOutcome(
                 PrefillStatus.InvalidBlobPaths,
                 null,
-                $"Could not resolve valid blob names for images. Expected prefix: images/{publicId.Value:N}/");
+                $"Could not resolve valid blob names for images. Expected prefix: images/{item.PublicId.Value:N}/");
         }
 
-        // 4) Call Azure OpenAI
-        var ai = await CallAzureOpenAi(imageSasUrls, request.TitleHint, request.Notes, cancellationToken);
+        // 4) Call Azure OpenAI via shared client
+        var ai = await CallPrefill(imageSasUrls, request.TitleHint, request.Notes, cancellationToken);
 
         // 5) Merge proposed values based on mode + overwrite flag
         var overwrite = request.Overwrite;
@@ -90,28 +83,20 @@ public sealed class AiPrefillService : IAiPrefillService
 
         if (mode is PrefillMode.All or PrefillMode.Title)
         {
-            newName = PickString(
-                overwrite,
-                item.Name,
-                ai.Name,
-                s => string.IsNullOrWhiteSpace(s) || s.Equals("Draft", StringComparison.OrdinalIgnoreCase));
+            newName = PickString(overwrite, item.Name, ai.Name,
+                s => string.IsNullOrWhiteSpace(s) || s.Equals("Draft", StringComparison.OrdinalIgnoreCase))
+                ?? item.Name;
         }
 
         if (mode is PrefillMode.All or PrefillMode.Description)
         {
-            newDesc = PickNullableString(
-                overwrite,
-                item.Description,
-                ai.Description,
+            newDesc = PickString(overwrite, item.Description, ai.Description,
                 s => string.IsNullOrWhiteSpace(s));
         }
 
         if (mode is PrefillMode.All or PrefillMode.Price)
         {
-            newPrice = PickInt(
-                overwrite,
-                item.UnitPriceCents,
-                SanitizePrice(ai.UnitPriceCents),
+            newPrice = PickInt(overwrite, item.UnitPriceCents, SanitizePrice(ai.UnitPriceCents),
                 p => p <= 0);
         }
 
@@ -125,6 +110,50 @@ public sealed class AiPrefillService : IAiPrefillService
         // 7) Reload + return
         var updated = await LoadItem(sqlConnStr, inventoryId, cancellationToken);
         return new PrefillOutcome(PrefillStatus.Ok, updated, null);
+    }
+
+    // ---------- Azure OpenAI prompt ----------
+
+    private async Task<AiPrefillResult> CallPrefill(
+        IReadOnlyList<Uri> imageUrls,
+        string? titleHint,
+        string? notes,
+        CancellationToken ct)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Analyze the item photos and return ONLY valid JSON (no markdown).");
+        sb.AppendLine("Schema:");
+        sb.AppendLine("{");
+        sb.AppendLine(@"  ""name"": string,");
+        sb.AppendLine(@"  ""description"": string,");
+        sb.AppendLine(@"  ""unitPriceCents"": number");
+        sb.AppendLine("}");
+        sb.AppendLine("Rules:");
+        sb.AppendLine("- name: short, product-style (no quotes)");
+        sb.AppendLine("- description: 1-2 sentences, factual, avoid hype");
+        sb.AppendLine("- unitPriceCents: integer cents (USD), reasonable resale price");
+
+        if (!string.IsNullOrWhiteSpace(titleHint))
+        {
+            sb.AppendLine();
+            sb.AppendLine("Title hint (optional; may be wrong):");
+            sb.AppendLine(titleHint.Trim());
+        }
+
+        if (!string.IsNullOrWhiteSpace(notes))
+        {
+            sb.AppendLine();
+            sb.AppendLine("Notes (optional; may be partial):");
+            sb.AppendLine(notes.Trim());
+        }
+
+        var content = new List<object> { new { type = "text", text = sb.ToString() } };
+        foreach (var u in imageUrls)
+            content.Add(new { type = "image_url", image_url = new { url = u.ToString() } });
+
+        var messages = new object[] { new { role = "user", content } };
+
+        return await _chat.CompleteJsonAsync<AiPrefillResult>(messages, ct) ?? new AiPrefillResult();
     }
 
     // ---------- Image selection ----------
@@ -160,29 +189,12 @@ public sealed class AiPrefillService : IAiPrefillService
 
     // ---------- SQL ----------
 
-    private static async Task<Guid?> LoadPublicId(string sqlConnStr, int id, CancellationToken ct)
-    {
-        const string sql = @"
-SELECT i.PublicId
-FROM inv.Inventory i
-WHERE i.InventoryId = @Id;
-";
-        using var conn = new SqlConnection(sqlConnStr);
-        await conn.OpenAsync(ct);
-
-        using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
-        cmd.Parameters.AddWithValue("@Id", id);
-
-        var val = await cmd.ExecuteScalarAsync(ct);
-        if (val is null || val is DBNull) return null;
-        return (Guid)val;
-    }
-
     private static async Task<InventoryItemDto?> LoadItem(string sqlConnStr, int id, CancellationToken ct)
     {
         const string sql = @"
 SELECT
     i.InventoryId,
+    i.PublicId,
     i.Sku,
     i.Name,
     i.Description,
@@ -208,15 +220,16 @@ ORDER BY i.InventoryId, img.SortOrder;
         InventoryItemDto? item = null;
 
         const int O_InventoryId = 0;
-        const int O_Sku = 1;
-        const int O_Name = 2;
-        const int O_Description = 3;
-        const int O_QuantityOnHand = 4;
-        const int O_UnitPriceCents = 5;
-        const int O_ImageId = 6;
-        const int O_ImagePath = 7;
-        const int O_IsPrimary = 8;
-        const int O_SortOrder = 9;
+        const int O_PublicId = 1;
+        const int O_Sku = 2;
+        const int O_Name = 3;
+        const int O_Description = 4;
+        const int O_QuantityOnHand = 5;
+        const int O_UnitPriceCents = 6;
+        const int O_ImageId = 7;
+        const int O_ImagePath = 8;
+        const int O_IsPrimary = 9;
+        const int O_SortOrder = 10;
 
         while (await reader.ReadAsync(ct))
         {
@@ -225,6 +238,7 @@ ORDER BY i.InventoryId, img.SortOrder;
                 item = new InventoryItemDto
                 {
                     InventoryId = reader.GetInt32(O_InventoryId),
+                    PublicId = reader.IsDBNull(O_PublicId) ? null : reader.GetGuid(O_PublicId),
                     Sku = reader.GetString(O_Sku),
                     Name = reader.GetString(O_Name),
                     Description = reader.IsDBNull(O_Description) ? null : reader.GetString(O_Description),
@@ -344,22 +358,11 @@ WHERE InventoryId = @Id;"
         if (cents is null) return null;
         var v = cents.Value;
         if (v < 0) v = 0;
-        if (v > 500_000) v = 500_000;
+        if (v > MaxResalePriceCents) v = MaxResalePriceCents;
         return v;
     }
 
-    private static string PickString(bool overwrite, string current, string? proposed, Func<string, bool> isPlaceholder)
-    {
-        if (overwrite)
-            return !string.IsNullOrWhiteSpace(proposed) ? proposed.Trim() : current;
-
-        if (isPlaceholder(current) && !string.IsNullOrWhiteSpace(proposed))
-            return proposed.Trim();
-
-        return current;
-    }
-
-    private static string? PickNullableString(bool overwrite, string? current, string? proposed, Func<string?, bool> isPlaceholder)
+    private static string? PickString(bool overwrite, string? current, string? proposed, Func<string?, bool> isPlaceholder)
     {
         if (overwrite)
             return !string.IsNullOrWhiteSpace(proposed) ? proposed.Trim() : current;
@@ -379,104 +382,5 @@ WHERE InventoryId = @Id;"
             return proposed.Value;
 
         return current;
-    }
-
-    // ---------- Azure OpenAI call ----------
-
-    private async Task<AiPrefillResult> CallAzureOpenAi(
-        IReadOnlyList<Uri> imageUrls,
-        string? titleHint,
-        string? notes,
-        CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(_openAi.Endpoint)
-            || string.IsNullOrWhiteSpace(_openAi.ApiKey)
-            || string.IsNullOrWhiteSpace(_openAi.Deployment))
-        {
-            throw new InvalidOperationException("Missing Azure OpenAI options (Endpoint/ApiKey/Deployment).");
-        }
-
-        var endpoint = _openAi.Endpoint.TrimEnd('/');
-        var url = $"{endpoint}/openai/deployments/{_openAi.Deployment}/chat/completions?api-version={_openAi.ApiVersion}";
-
-        var sb = new StringBuilder();
-        sb.AppendLine("Analyze the item photos and return ONLY valid JSON (no markdown).");
-        sb.AppendLine("Schema:");
-        sb.AppendLine("{");
-        sb.AppendLine(@"  ""name"": string,");
-        sb.AppendLine(@"  ""description"": string,");
-        sb.AppendLine(@"  ""unitPriceCents"": number");
-        sb.AppendLine("}");
-        sb.AppendLine("Rules:");
-        sb.AppendLine("- name: short, product-style (no quotes)");
-        sb.AppendLine("- description: 1-2 sentences, factual, avoid hype");
-        sb.AppendLine("- unitPriceCents: integer cents (USD), reasonable resale price");
-
-        if (!string.IsNullOrWhiteSpace(titleHint))
-        {
-            sb.AppendLine();
-            sb.AppendLine("Title hint (optional; may be wrong):");
-            sb.AppendLine(titleHint.Trim());
-        }
-
-        if (!string.IsNullOrWhiteSpace(notes))
-        {
-            sb.AppendLine();
-            sb.AppendLine("Notes (optional; may be partial):");
-            sb.AppendLine(notes.Trim());
-        }
-
-        var content = new List<object>
-        {
-            new { type = "text", text = sb.ToString() }
-        };
-
-        foreach (var u in imageUrls)
-            content.Add(new { type = "image_url", image_url = new { url = u.ToString() } });
-
-        var payload = new
-        {
-            messages = new object[] { new { role = "user", content } },
-            temperature = 0.2,
-            max_tokens = 400
-        };
-
-        var json = JsonSerializer.Serialize(payload);
-
-        using var httpReq = new HttpRequestMessage(HttpMethod.Post, url);
-        httpReq.Headers.Add("api-key", _openAi.ApiKey);
-        httpReq.Content = new StringContent(json, Encoding.UTF8, "application/json");
-
-        using var resp = await _httpClient.SendAsync(httpReq, ct);
-        var respBody = await resp.Content.ReadAsStringAsync(ct);
-
-        if (!resp.IsSuccessStatusCode)
-        {
-            _logger.LogError("Azure OpenAI error {Status}: {Body}", (int)resp.StatusCode, respBody);
-            throw new InvalidOperationException($"Azure OpenAI error {(int)resp.StatusCode}.");
-        }
-
-        using var doc = JsonDocument.Parse(respBody);
-        var contentText = doc.RootElement
-            .GetProperty("choices")[0]
-            .GetProperty("message")
-            .GetProperty("content")
-            .GetString() ?? "{}";
-
-        var clean = ExtractFirstJsonObject(contentText);
-
-        return JsonSerializer.Deserialize<AiPrefillResult>(clean, new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true
-        }) ?? new AiPrefillResult();
-    }
-
-    private static string ExtractFirstJsonObject(string s)
-    {
-        var start = s.IndexOf('{');
-        var end = s.LastIndexOf('}');
-        if (start >= 0 && end > start)
-            return s.Substring(start, end - start + 1);
-        return "{}";
     }
 }

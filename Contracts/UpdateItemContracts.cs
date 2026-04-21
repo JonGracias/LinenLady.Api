@@ -2,6 +2,8 @@ namespace LinenLady.API.Contracts;
 
 public sealed class UpdateItemRequest
 {
+    internal bool IsDraft;
+
     // Direct field updates — null means "don't change"
     public string? Name { get; set; }
     public string? Description { get; set; }

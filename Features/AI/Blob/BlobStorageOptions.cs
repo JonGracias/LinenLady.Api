@@ -1,4 +1,4 @@
-namespace LinenLady.API.AI.Blob.Options;
+namespace LinenLady.API.Blob.Options;
 
 public sealed class BlobStorageOptions
 {

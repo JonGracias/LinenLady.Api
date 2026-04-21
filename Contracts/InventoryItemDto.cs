@@ -3,7 +3,7 @@ namespace LinenLady.API.Contracts;
 public sealed class InventoryItemDto
 {
     public int      InventoryId    { get; set; }
-    public Guid     PublicId       { get; set; }
+    public Guid?     PublicId       { get; set; }
     public string   Sku            { get; set; } = "";
     public string   Name           { get; set; } = "";
     public string?  Description    { get; set; }

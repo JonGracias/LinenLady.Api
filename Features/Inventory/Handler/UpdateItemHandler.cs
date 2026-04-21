@@ -83,13 +83,13 @@ public sealed class UpdateItemHandler
                 if (request.Ai.Fields.Contains("description") && aiResult.Description is not null)
                     description = aiResult.Description;
 
-                if (request.Ai.Fields.Contains("price") && aiResult.PriceCents is not null)
-                    priceCents = aiResult.PriceCents.Value;
+                if (request.Ai.Fields.Contains("price") && aiResult.UnitPriceCents is not null)
+                    priceCents = aiResult.UnitPriceCents.Value;
             }
         }
 
         // 5. Persist
-        var updated = await _repo.Update(inventoryId, new UpdateItemFields
+        var updated = await _repo.Update(inventoryId, new UpdateItemRequest
         {
             Name           = name,
             Description    = description,
