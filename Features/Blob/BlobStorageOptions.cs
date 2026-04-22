@@ -6,5 +6,5 @@ public sealed class BlobStorageOptions
 
     public string ConnectionString { get; set; } = string.Empty;
     public string ImageContainerName { get; set; } = "inventory-images";
-    public string SiteMediaContainerName { get; set; } = "inventory-images";
+    public string SiteMediaContainerName { get; set; } = "site-media";
 }
