@@ -1,10 +1,10 @@
 // Infrastructure/SquareService.cs
 using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using LinenLady.API.Contracts;
+using Microsoft.Extensions.Options;
 
 namespace LinenLady.API.Square;
 
@@ -25,16 +25,21 @@ public class SquareService : ISquareService
     private readonly HttpClient _http;
     private readonly string     _locationId;
 
-    // Reads from environment — matches the project pattern (Environment.GetEnvironmentVariable).
     // Set SQUARE_ACCESS_TOKEN and SQUARE_LOCATION_ID in local.settings.json
     // and in Azure Function App configuration.
-    public SquareService(IHttpClientFactory factory)
+    public SquareService(
+        IHttpClientFactory factory,
+        IOptions<SquareOptions> options)
     {
-        _locationId = Environment.GetEnvironmentVariable("SQUARE_LOCATION_ID")
-            ?? throw new InvalidOperationException("SQUARE_LOCATION_ID not configured.");
+        var opts = options.Value;
 
-        var token = Environment.GetEnvironmentVariable("SQUARE_ACCESS_TOKEN")
-            ?? throw new InvalidOperationException("SQUARE_ACCESS_TOKEN not configured.");
+        _locationId = !string.IsNullOrWhiteSpace(opts.LocationId)
+            ? opts.LocationId
+            : throw new InvalidOperationException("Square:LocationId not configured.");
+
+        var token = !string.IsNullOrWhiteSpace(opts.AccessToken)
+            ? opts.AccessToken
+            : throw new InvalidOperationException("Square:AccessToken not configured.");
 
         _http = factory.CreateClient("square");
         _http.BaseAddress = new Uri("https://connect.squareup.com/");

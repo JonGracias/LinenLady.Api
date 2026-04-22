@@ -40,6 +40,8 @@ builder.Services.Configure<AzureOpenAiOptions>(
     builder.Configuration.GetSection(AzureOpenAiOptions.SectionName));
 builder.Services.Configure<BlobStorageOptions>(
     builder.Configuration.GetSection(BlobStorageOptions.SectionName));
+builder.Services.Configure<SquareOptions>(
+    builder.Configuration.GetSection(SquareOptions.SectionName));
 
 // ─── AI: shared clients ──────────────────────────────────────────────────────
 // Both clients receive HttpClient via IHttpClientFactory so retry/timeout

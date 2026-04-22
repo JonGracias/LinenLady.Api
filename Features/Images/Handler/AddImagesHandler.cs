@@ -8,20 +8,20 @@ namespace LinenLady.API.Inventory.Images.Handler;
 
 public sealed class AddImagesHandler
 {
+    private readonly string _connStr;
     private readonly ILogger<AddImagesHandler> _logger;
-
-    public AddImagesHandler(ILogger<AddImagesHandler> logger)
+    public AddImagesHandler(
+        IConfiguration configuration,
+        ILogger<AddImagesHandler> logger)
     {
+        _connStr = configuration.GetConnectionString("Sql")
+            ?? throw new InvalidOperationException("Missing connection string 'Sql'");
         _logger = logger;
     }
 
     public async Task<AddImagesResult> HandleAsync(int inventoryId, AddImagesRequest body, CancellationToken ct)
     {
         if (inventoryId <= 0) throw new ArgumentException("Invalid id.");
-
-        var connStr = Environment.GetEnvironmentVariable("SQL_CONNECTION_STRING");
-        if (string.IsNullOrWhiteSpace(connStr))
-            throw new InvalidOperationException("Server misconfigured: missing SQL_CONNECTION_STRING.");
 
         if (body.Images is null || body.Images.Count == 0)
             throw new ArgumentException("Body must include images[] with at least one entry.");
@@ -74,7 +74,7 @@ VALUES (@InventoryId, @ImagePath, @IsPrimary, @SortOrder);";
 
         try
         {
-            using var conn = new SqlConnection(connStr);
+            using var conn = new SqlConnection(_connStr);
             await conn.OpenAsync(ct);
 
             using var tx = conn.BeginTransaction();

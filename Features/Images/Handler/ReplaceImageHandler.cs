@@ -2,6 +2,8 @@
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 using LinenLady.API.Blob;
+using Microsoft.Extensions.Options;
+using LinenLady.API.Blob.Options;
 
 namespace LinenLady.API.Inventory.Images.Handler;
 
@@ -14,10 +16,24 @@ public record ReplaceImageUploadInfo(
 
 public sealed class ReplaceImageHandler
 {
+    private readonly string _connStr;
+    private readonly string _blobConnStr;
+    private readonly string _containerName;
     private readonly ILogger<ReplaceImageHandler> _logger;
 
-    public ReplaceImageHandler(ILogger<ReplaceImageHandler> logger)
+    public ReplaceImageHandler(
+        IConfiguration configuration,
+        IOptions<BlobStorageOptions> blobOptions,
+        ILogger<ReplaceImageHandler> logger)
     {
+        _connStr = configuration.GetConnectionString("Sql")
+            ?? throw new InvalidOperationException("Missing connection string 'Sql'.");
+
+        var opts = blobOptions.Value;
+        _blobConnStr = opts.ConnectionString;
+        _containerName = string.IsNullOrWhiteSpace(opts.ImageContainerName)
+            ? "inventory-images" : opts.ImageContainerName;
+
         _logger = logger;
     }
 
@@ -28,16 +44,6 @@ public sealed class ReplaceImageHandler
     {
         if (inventoryId <= 0) throw new ArgumentException("Invalid inventory id.");
         if (imageId <= 0)     throw new ArgumentException("Invalid image id.");
-
-        var connStr = Environment.GetEnvironmentVariable("SQL_CONNECTION_STRING");
-        if (string.IsNullOrWhiteSpace(connStr))
-            throw new InvalidOperationException("Missing SQL_CONNECTION_STRING.");
-
-        var blobConnStr = Environment.GetEnvironmentVariable("BLOB_STORAGE_CONNECTION_STRING");
-        if (string.IsNullOrWhiteSpace(blobConnStr))
-            throw new InvalidOperationException("Missing BLOB_CONNECTION_STRING.");
-
-        var containerName = Environment.GetEnvironmentVariable("IMAGE_CONTAINER_NAME") ?? "inventory";
 
         const string sql = """
             SELECT ii.ImagePath
@@ -51,7 +57,7 @@ public sealed class ReplaceImageHandler
         string imagePath;
         try
         {
-            using var conn = new SqlConnection(connStr);
+            using var conn = new SqlConnection(_connStr);
             await conn.OpenAsync(ct);
 
             using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
@@ -80,8 +86,8 @@ public sealed class ReplaceImageHandler
         };
 
         var (uploadUrl, requiredHeaders) = BlobSas.BuildUploadUrl(
-            blobConnStr,
-            containerName,
+            _blobConnStr,
+            _containerName,
             imagePath,
             contentType,
             TimeSpan.FromMinutes(15)

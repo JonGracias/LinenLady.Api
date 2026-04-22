@@ -3,16 +3,32 @@
 // If the deleted image was primary, promotes the lowest-SortOrder remaining image.
 
 using Azure.Storage.Blobs;
+using LinenLady.API.Blob.Options;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Options;
 
 namespace LinenLady.API.Inventory.Images.Handler;
 
 public sealed class DeleteImageHandler
 {
+    private readonly string _connStr;
+    private readonly string _blobConnStr;
+    private readonly string _containerName;
     private readonly ILogger<DeleteImageHandler> _logger;
 
-    public DeleteImageHandler(ILogger<DeleteImageHandler> logger)
+    public DeleteImageHandler(
+        IConfiguration configuration,
+        IOptions<BlobStorageOptions> blobOptions,
+        ILogger<DeleteImageHandler> logger)
     {
+        _connStr = configuration.GetConnectionString("Sql")
+            ?? throw new InvalidOperationException("Missing connection string 'Sql'.");
+
+        var opts = blobOptions.Value;
+        _blobConnStr = opts.ConnectionString;
+        _containerName = string.IsNullOrWhiteSpace(opts.ImageContainerName)
+            ? "inventory-images" : opts.ImageContainerName;
+
         _logger = logger;
     }
 
@@ -20,13 +36,6 @@ public sealed class DeleteImageHandler
     {
         if (inventoryId <= 0) throw new ArgumentException("Invalid inventory id.");
         if (imageId     <= 0) throw new ArgumentException("Invalid image id.");
-
-        var connStr = Environment.GetEnvironmentVariable("SQL_CONNECTION_STRING");
-        if (string.IsNullOrWhiteSpace(connStr))
-            throw new InvalidOperationException("Missing SQL_CONNECTION_STRING.");
-
-        var blobConnStr   = Environment.GetEnvironmentVariable("BLOB_STORAGE_CONNECTION_STRING");
-        var containerName = Environment.GetEnvironmentVariable("IMAGE_CONTAINER_NAME") ?? "inventory";
 
         // 1. Load image row — confirms it belongs to this item
         const string loadSql = """
@@ -61,7 +70,7 @@ public sealed class DeleteImageHandler
 
         try
         {
-            using var conn = new SqlConnection(connStr);
+            using var conn = new SqlConnection(_connStr);
             await conn.OpenAsync(ct);
             using var tx = conn.BeginTransaction();
 
@@ -105,12 +114,12 @@ public sealed class DeleteImageHandler
         }
 
         // 2. Delete the blob — best-effort, non-fatal
-        if (!string.IsNullOrWhiteSpace(blobConnStr))
+        if (!string.IsNullOrWhiteSpace(_blobConnStr))
         {
             try
             {
-                var blobServiceClient   = new BlobServiceClient(blobConnStr);
-                var containerClient     = blobServiceClient.GetBlobContainerClient(containerName);
+                var blobServiceClient   = new BlobServiceClient(_blobConnStr);
+                var containerClient     = blobServiceClient.GetBlobContainerClient(_containerName);
                 var blobClient          = containerClient.GetBlobClient(imagePath);
                 await blobClient.DeleteIfExistsAsync(cancellationToken: ct);
             }

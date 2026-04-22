@@ -5,6 +5,8 @@
 
 using Microsoft.Data.SqlClient;
 using LinenLady.API.Blob;
+using LinenLady.API.Blob.Options;
+using Microsoft.Extensions.Options;
 
 namespace LinenLady.API.Inventory.Images.Handler;
 
@@ -17,10 +19,24 @@ public record NewBlobUrlInfo(
 
 public sealed class NewBlobUrlHandler
 {
+    private readonly string _connStr;
+    private readonly string _blobConnStr;
+    private readonly string _containerName;
     private readonly ILogger<NewBlobUrlHandler> _logger;
 
-    public NewBlobUrlHandler(ILogger<NewBlobUrlHandler> logger)
+    public NewBlobUrlHandler(
+        IConfiguration configuration,
+        IOptions<BlobStorageOptions> blobOptions,
+        ILogger<NewBlobUrlHandler> logger)
     {
+        _connStr = configuration.GetConnectionString("Sql")
+            ?? throw new InvalidOperationException("Missing connection string 'Sql'.");
+
+        var opts = blobOptions.Value;
+        _blobConnStr = opts.ConnectionString;
+        _containerName = string.IsNullOrWhiteSpace(opts.ImageContainerName)
+            ? "inventory-images" : opts.ImageContainerName;
+        
         _logger = logger;
     }
 
@@ -36,16 +52,6 @@ public sealed class NewBlobUrlHandler
         if (string.IsNullOrWhiteSpace(fileName))
             throw new ArgumentException("fileName is required.");
 
-        var connStr = Environment.GetEnvironmentVariable("SQL_CONNECTION_STRING");
-        if (string.IsNullOrWhiteSpace(connStr))
-            throw new InvalidOperationException("Missing SQL_CONNECTION_STRING.");
-
-        var blobConnStr = Environment.GetEnvironmentVariable("BLOB_STORAGE_CONNECTION_STRING");
-        if (string.IsNullOrWhiteSpace(blobConnStr))
-            throw new InvalidOperationException("Missing BLOB_STORAGE_CONNECTION_STRING.");
-
-        var containerName = Environment.GetEnvironmentVariable("IMAGE_CONTAINER_NAME") ?? "inventory";
-
         // 1. Load PublicId — validates item exists and is not deleted
         const string sql = """
             SELECT PublicId
@@ -56,7 +62,7 @@ public sealed class NewBlobUrlHandler
         Guid publicId;
         try
         {
-            using var conn = new SqlConnection(connStr);
+            using var conn = new SqlConnection(_connStr);
             await conn.OpenAsync(ct);
 
             using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
@@ -92,8 +98,8 @@ public sealed class NewBlobUrlHandler
 
         // 4. Generate SAS upload URL
         var (uploadUrl, requiredHeaders) = BlobSas.BuildUploadUrl(
-            blobConnStr,
-            containerName,
+            _blobConnStr,
+            _containerName,
             blobName,
             resolvedContentType,
             TimeSpan.FromMinutes(15)
