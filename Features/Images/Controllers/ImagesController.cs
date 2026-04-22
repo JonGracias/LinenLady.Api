@@ -1,7 +1,9 @@
 namespace LinenLady.API.Controllers;
 
+using LinenLady.API.Api.Auth;
 using LinenLady.API.Contracts;
 using LinenLady.API.Inventory.Images.Handler;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
@@ -15,7 +17,8 @@ public sealed class ImagesController(
     SetPrimaryImageHandler setPrimaryHandler,
     IConfiguration configuration) : ControllerBase
 {
-    // GET /items/{id}/images?ttlMinutes=60
+    // GET /items/{id}/images?ttlMinutes=60  — public storefront needs image URLs
+    [AllowAnonymous]
     [HttpGet]
     public async Task<IActionResult> GetImages(
         int id,
@@ -36,6 +39,7 @@ public sealed class ImagesController(
     }
 
     // POST /items/{id}/images
+    [Authorize(Policy = AuthPolicies.Admin)]
     [HttpPost]
     public async Task<IActionResult> AddImages(
         int id,
@@ -49,6 +53,7 @@ public sealed class ImagesController(
     }
 
     // GET /items/{id}/images/new-blob-url?fileName=x.jpg&contentType=image/jpeg
+    [Authorize(Policy = AuthPolicies.Admin)]
     [HttpGet("new-blob-url")]
     public async Task<IActionResult> GetNewBlobUrl(
         int id,
@@ -69,6 +74,7 @@ public sealed class ImagesController(
     }
 
     // DELETE /items/{id}/images/{imageId}
+    [Authorize(Policy = AuthPolicies.Admin)]
     [HttpDelete("{imageId:int}")]
     public async Task<IActionResult> DeleteImage(
         int id,
@@ -80,6 +86,7 @@ public sealed class ImagesController(
     }
 
     // GET /items/{id}/images/{imageId}/replace-url
+    [Authorize(Policy = AuthPolicies.Admin)]
     [HttpGet("{imageId:int}/replace-url")]
     public async Task<IActionResult> GetReplaceUrl(
         int id,
@@ -97,6 +104,7 @@ public sealed class ImagesController(
     }
 
     // PATCH /items/{id}/images/{imageId}/primary
+    [Authorize(Policy = AuthPolicies.Admin)]
     [HttpPatch("{imageId:int}/primary")]
     public async Task<IActionResult> SetPrimary(
         int id,

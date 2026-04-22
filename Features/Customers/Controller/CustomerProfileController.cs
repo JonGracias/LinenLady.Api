@@ -3,9 +3,11 @@ namespace LinenLady.API.Controllers;
 using LinenLady.API.Api.Auth;
 using LinenLady.API.Contracts;
 using LinenLady.API.Customers.Handler;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
+[Authorize(Policy = AuthPolicies.Customer)]
 [Route("customers")]
 public sealed class CustomerProfileController(
     SyncCustomerHandler syncHandler,
@@ -15,15 +17,25 @@ public sealed class CustomerProfileController(
     DeleteAddressHandler deleteAddressHandler,
     SetPreferencesHandler setPreferencesHandler) : ControllerBase
 {
-    // POST /customers/sync  (no auth — called on Clerk sign-in)
+    // POST /customers/sync
+    // Called on sign-in. Identity fields (ClerkUserId, email, email_verified)
+    // come from the validated JWT — the body carries only editable fields.
     [HttpPost("sync")]
     public async Task<IActionResult> Sync(
         [FromBody] UpsertCustomerRequest? body,
         CancellationToken ct)
     {
-        if (body is null) return BadRequest("Invalid JSON body.");
+        var clerkUserId = User.GetClerkUserId();
+        if (clerkUserId is null) return Unauthorized();
 
-        var result = await syncHandler.HandleAsync(body, ct);
+        var email = User.GetEmail();
+        if (string.IsNullOrWhiteSpace(email))
+            return BadRequest("JWT is missing an 'email' claim.");
+
+        var isEmailVerified = User.GetEmailVerified();
+
+        var result = await syncHandler.HandleAsync(
+            clerkUserId, email, isEmailVerified, body ?? new(null, null, null), ct);
         return Ok(result);
     }
 
@@ -31,7 +43,7 @@ public sealed class CustomerProfileController(
     [HttpGet("me")]
     public async Task<IActionResult> GetMe(CancellationToken ct)
     {
-        var clerkUserId = Request.GetClerkUserId();
+        var clerkUserId = User.GetClerkUserId();
         if (clerkUserId is null) return Unauthorized();
 
         var result = await getProfileHandler.HandleAsync(clerkUserId, ct);
@@ -44,7 +56,7 @@ public sealed class CustomerProfileController(
         [FromBody] UpdateCustomerRequest? body,
         CancellationToken ct)
     {
-        var clerkUserId = Request.GetClerkUserId();
+        var clerkUserId = User.GetClerkUserId();
         if (clerkUserId is null) return Unauthorized();
         if (body is null) return BadRequest("Invalid JSON body.");
 
@@ -61,7 +73,7 @@ public sealed class CustomerProfileController(
         [FromBody] UpsertAddressRequest? body,
         CancellationToken ct)
     {
-        var clerkUserId = Request.GetClerkUserId();
+        var clerkUserId = User.GetClerkUserId();
         if (clerkUserId is null) return Unauthorized();
         if (body is null) return BadRequest("Invalid JSON body.");
 
@@ -73,7 +85,7 @@ public sealed class CustomerProfileController(
     [HttpDelete("me/addresses/{addressId:int}")]
     public async Task<IActionResult> DeleteAddress(int addressId, CancellationToken ct)
     {
-        var clerkUserId = Request.GetClerkUserId();
+        var clerkUserId = User.GetClerkUserId();
         if (clerkUserId is null) return Unauthorized();
 
         var deleted = await deleteAddressHandler.HandleAsync(clerkUserId, addressId, ct);
@@ -86,7 +98,7 @@ public sealed class CustomerProfileController(
         [FromBody] SetPreferencesRequest? body,
         CancellationToken ct)
     {
-        var clerkUserId = Request.GetClerkUserId();
+        var clerkUserId = User.GetClerkUserId();
         if (clerkUserId is null) return Unauthorized();
         if (body is null) return BadRequest("Invalid JSON body.");
 

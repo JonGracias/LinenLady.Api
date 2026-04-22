@@ -1,9 +1,11 @@
 namespace LinenLady.API.Controllers;
 
 using LinenLady.API.Search.Handler;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
+[AllowAnonymous]
 [Route("items/{id:int}")]
 public sealed class SearchController(SimilarItemsHandler handler) : ControllerBase
 {

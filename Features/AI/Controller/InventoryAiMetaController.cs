@@ -1,10 +1,13 @@
 namespace LinenLady.API.Controllers;
 
+using LinenLady.API.Api.Auth;
 using LinenLady.API.Contracts;
 using LinenLady.API.Inventory.AiMeta.Sql;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
+[Authorize(Policy = AuthPolicies.Admin)]
 [Route("items/{id:int}/ai-meta")]
 public sealed class InventoryAiMetaController(IInventoryAiMetaRepository repo) : ControllerBase
 {

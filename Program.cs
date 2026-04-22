@@ -5,6 +5,7 @@ using LinenLady.API.AI.Options;
 using LinenLady.API.AI.Prefill.Service;
 using LinenLady.API.AI.Rewrite.Service;
 using LinenLady.API.AI.Seo.Service;
+using LinenLady.API.Api.Auth;
 using LinenLady.API.Api.Filters;
 using LinenLady.API.BackgroundServices;
 using LinenLady.API.Blob.Options;
@@ -20,6 +21,9 @@ using LinenLady.API.Site.Blob;
 using LinenLady.API.Site.Handler;
 using LinenLady.API.Site.Sql;
 using LinenLady.API.Square;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -42,6 +46,67 @@ builder.Services.Configure<BlobStorageOptions>(
     builder.Configuration.GetSection(BlobStorageOptions.SectionName));
 builder.Services.Configure<SquareOptions>(
     builder.Configuration.GetSection(SquareOptions.SectionName));
+builder.Services.Configure<ClerkAuthOptions>(
+    builder.Configuration.GetSection(ClerkAuthOptions.SectionName));
+
+// ─── Authentication (Clerk JWT) ──────────────────────────────────────────────
+// Clerk's JWKS is discovered via OIDC metadata at {Authority}/.well-known/openid-configuration.
+// The handler caches keys and rotates on schedule, so the API stays correct across
+// Clerk key rotations without a redeploy. If Authority is unset we fail fast at
+// startup — running unauthenticated in any environment is a configuration bug.
+var clerkOpts = builder.Configuration.GetSection(ClerkAuthOptions.SectionName)
+                                     .Get<ClerkAuthOptions>()
+                ?? throw new InvalidOperationException(
+                    "Missing configuration section 'Clerk'.");
+
+if (string.IsNullOrWhiteSpace(clerkOpts.Authority))
+    throw new InvalidOperationException(
+        "Missing configuration 'Clerk:Authority' (Clerk instance URL).");
+
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.Authority = clerkOpts.Authority;
+        options.RequireHttpsMetadata = !builder.Environment.IsDevelopment();
+
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer           = true,
+            ValidIssuer              = clerkOpts.Authority,
+            ValidateAudience         = false, // Clerk doesn't emit aud by default
+            ValidateLifetime         = true,
+            ValidateIssuerSigningKey = true,
+            ClockSkew                = TimeSpan.FromSeconds(30),
+            NameClaimType            = "sub",
+        };
+    });
+
+// ─── Authorization ───────────────────────────────────────────────────────────
+// Two policies:
+//   Customer — any authenticated Clerk user. Customer-owned data endpoints.
+//   Admin    — authenticated user whose JWT carries an org_id claim matching
+//              the configured admin org. Inventory/site/AI mutation endpoints.
+//
+// The default policy is "must be authenticated" — any controller without an
+// explicit [AllowAnonymous] still gets the JWT check.
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy(AuthPolicies.Customer, p => p.RequireAuthenticatedUser());
+
+    options.AddPolicy(AuthPolicies.Admin, p => p
+        .RequireAuthenticatedUser()
+        .RequireAssertion(ctx =>
+            !string.IsNullOrWhiteSpace(clerkOpts.AdminOrgId)
+            && string.Equals(
+                ctx.User.GetOrgId(),
+                clerkOpts.AdminOrgId,
+                StringComparison.Ordinal)));
+
+    options.FallbackPolicy = new AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build();
+});
 
 // ─── AI: shared clients ──────────────────────────────────────────────────────
 // Both clients receive HttpClient via IHttpClientFactory so retry/timeout
@@ -123,6 +188,7 @@ if (app.Environment.IsDevelopment())
 }
 
 // app.UseHttpsRedirection();
+app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 

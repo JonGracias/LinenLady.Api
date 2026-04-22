@@ -13,13 +13,14 @@ public record CustomerDto(
     DateTime CreatedAt
 );
 
+// Identity fields (ClerkUserId, Email, IsEmailVerified) deliberately omitted —
+// the controller reads them from the validated JWT and passes them to the
+// handler, not the request body. Only fields the user can legitimately edit
+// remain here.
 public record UpsertCustomerRequest(
-    string  ClerkUserId,
-    string  Email,
     string? FirstName,
     string? LastName,
-    string? Phone,
-    bool    IsEmailVerified
+    string? Phone
 );
 
 public record UpdateCustomerRequest(

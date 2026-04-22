@@ -1,14 +1,17 @@
 namespace LinenLady.API.Controllers;
 
+using LinenLady.API.Api.Auth;
 using LinenLady.API.Contracts;
 using LinenLady.API.Site.Handler;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
 [Route("site/config")]
 public sealed class SiteConfigController(SiteConfigHandler handler) : ControllerBase
 {
-    // GET /site/config
+    // GET /site/config  — public site reads these
+    [AllowAnonymous]
     [HttpGet]
     public async Task<IActionResult> List(CancellationToken ct)
     {
@@ -16,7 +19,8 @@ public sealed class SiteConfigController(SiteConfigHandler handler) : Controller
         return Ok(result);
     }
 
-    // GET /site/config/{key}
+    // GET /site/config/{key}  — public site reads these
+    [AllowAnonymous]
     [HttpGet("{key}")]
     public async Task<IActionResult> Get(string key, CancellationToken ct)
     {
@@ -27,6 +31,7 @@ public sealed class SiteConfigController(SiteConfigHandler handler) : Controller
     }
 
     // PUT /site/config/{key}
+    [Authorize(Policy = AuthPolicies.Admin)]
     [HttpPut("{key}")]
     public async Task<IActionResult> Set(
         string key,

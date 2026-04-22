@@ -3,9 +3,11 @@ namespace LinenLady.API.Controllers;
 using LinenLady.API.Api.Auth;
 using LinenLady.API.Contracts;
 using LinenLady.API.Customers.Handler;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
+[Authorize(Policy = AuthPolicies.Customer)]
 [Route("customers/me/messages")]
 public sealed class MessagesController(MessageHandler handler) : ControllerBase
 {
@@ -13,7 +15,7 @@ public sealed class MessagesController(MessageHandler handler) : ControllerBase
     [HttpGet]
     public async Task<IActionResult> GetMessages(CancellationToken ct)
     {
-        var clerkUserId = Request.GetClerkUserId();
+        var clerkUserId = User.GetClerkUserId();
         if (clerkUserId is null) return Unauthorized();
 
         var result = await handler.GetAsync(clerkUserId, ct);
@@ -26,7 +28,7 @@ public sealed class MessagesController(MessageHandler handler) : ControllerBase
         [FromBody] SendMessageRequest? body,
         CancellationToken ct)
     {
-        var clerkUserId = Request.GetClerkUserId();
+        var clerkUserId = User.GetClerkUserId();
         if (clerkUserId is null) return Unauthorized();
         if (body is null || string.IsNullOrWhiteSpace(body.Body))
             return BadRequest("Message body is required.");

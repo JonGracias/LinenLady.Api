@@ -1,10 +1,13 @@
 namespace LinenLady.API.Controllers;
 
 using LinenLady.API.AI.Keywords.Service;
+using LinenLady.API.Api.Auth;
 using LinenLady.API.Contracts;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
+[Authorize(Policy = AuthPolicies.Admin)]
 [Route("items/{id:int}")]
 public sealed class AiKeywordsController(IAiKeywordsService service) : ControllerBase
 {

@@ -8,7 +8,7 @@ using Microsoft.Data.SqlClient;
 public interface ICustomerRepository
 {
     Task<CustomerDto?>          GetByClerkIdAsync(string clerkUserId);
-    Task<CustomerDto>           UpsertAsync(UpsertCustomerRequest req);
+    Task<CustomerDto>           UpsertAsync(string clerkUserId, string email, bool isEmailVerified, UpsertCustomerRequest req);
     Task<CustomerDto?>          UpdateAsync(int customerId, UpdateCustomerRequest req);
 
     Task<List<CustomerAddressDto>> GetAddressesAsync(int customerId);
@@ -61,7 +61,8 @@ public class CustomerRepository : ICustomerRepository
             new { ClerkUserId = clerkUserId });
     }
 
-    public async Task<CustomerDto> UpsertAsync(UpsertCustomerRequest req)
+    public async Task<CustomerDto> UpsertAsync(
+        string clerkUserId, string email, bool isEmailVerified, UpsertCustomerRequest req)
     {
         using var db = Connect();
         return await db.QueryFirstAsync<CustomerDto>(
@@ -85,7 +86,15 @@ public class CustomerRepository : ICustomerRepository
                 inserted.FirstName,  inserted.LastName,    inserted.Phone,
                 inserted.IsEmailVerified, inserted.CreatedAt;
             """,
-            req);
+            new
+            {
+                ClerkUserId     = clerkUserId,
+                Email           = email,
+                IsEmailVerified = isEmailVerified,
+                req.FirstName,
+                req.LastName,
+                req.Phone,
+            });
     }
 
     public async Task<CustomerDto?> UpdateAsync(int customerId, UpdateCustomerRequest req)

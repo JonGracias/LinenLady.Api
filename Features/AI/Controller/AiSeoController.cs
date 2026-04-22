@@ -1,9 +1,12 @@
 namespace LinenLady.API.Controllers;
 
 using LinenLady.API.AI.Seo.Service;
+using LinenLady.API.Api.Auth;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
+[Authorize(Policy = AuthPolicies.Admin)]
 [Route("items/{id:int}")]
 public sealed class AiSeoController(IAiSeoService service) : ControllerBase
 {

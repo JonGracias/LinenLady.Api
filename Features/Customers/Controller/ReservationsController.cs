@@ -3,9 +3,11 @@ namespace LinenLady.API.Controllers;
 using LinenLady.API.Api.Auth;
 using LinenLady.API.Contracts;
 using LinenLady.API.Customers.Handler;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
+[Authorize(Policy = AuthPolicies.Customer)]
 public sealed class ReservationsController(
     CreateReservationHandler createHandler,
     CancelReservationHandler cancelHandler,
@@ -17,7 +19,7 @@ public sealed class ReservationsController(
         [FromBody] CreateReservationRequest? body,
         CancellationToken ct)
     {
-        var clerkUserId = Request.GetClerkUserId();
+        var clerkUserId = User.GetClerkUserId();
         if (clerkUserId is null) return Unauthorized();
         if (body is null) return BadRequest("Invalid JSON body.");
 
@@ -31,17 +33,19 @@ public sealed class ReservationsController(
         int reservationId,
         CancellationToken ct)
     {
-        var clerkUserId = Request.GetClerkUserId();
+        var clerkUserId = User.GetClerkUserId();
         if (clerkUserId is null) return Unauthorized();
 
         var result = await cancelHandler.HandleAsync(clerkUserId, reservationId, ct);
         return Ok(result);
     }
 
-    // POST /square/webhook  (no auth — Square calls directly)
-    // NOTE: This endpoint should validate the Square-Signature header against
-    // a configured webhook signing key before trusting the payload. Currently
-    // matches existing behavior (no validation), but flagged for follow-up.
+    // POST /square/webhook  (Square calls directly)
+    // Signature verification is tracked as Severe #3 — the endpoint accepts
+    // unauthenticated requests at the auth layer because there's no bearer
+    // token from Square, but the handler itself should reject unsigned/invalid
+    // payloads once verification is wired in.
+    [AllowAnonymous]
     [HttpPost("square/webhook")]
     public async Task<IActionResult> SquareWebhook(CancellationToken ct)
     {

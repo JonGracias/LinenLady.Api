@@ -26,14 +26,27 @@ public sealed class SyncCustomerHandler
         _log = log;
     }
 
-    public async Task<CustomerDto> HandleAsync(UpsertCustomerRequest req, CancellationToken ct)
+    /// <summary>
+    /// Upserts the customer record. Identity fields (<paramref name="clerkUserId"/>,
+    /// <paramref name="email"/>, <paramref name="isEmailVerified"/>) come from the
+    /// validated Clerk JWT, not from <paramref name="req"/>, so the caller can't
+    /// spoof someone else's identity or mark their own email verified.
+    /// </summary>
+    public async Task<CustomerDto> HandleAsync(
+        string clerkUserId,
+        string email,
+        bool isEmailVerified,
+        UpsertCustomerRequest req,
+        CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(req.ClerkUserId))
+        if (string.IsNullOrWhiteSpace(clerkUserId))
             throw new ArgumentException("ClerkUserId is required.");
-        if (string.IsNullOrWhiteSpace(req.Email))
+        if (string.IsNullOrWhiteSpace(email))
             throw new ArgumentException("Email is required.");
 
-        var customer = await _repo.UpsertAsync(req);
+        var customer = await _repo.UpsertAsync(
+            clerkUserId, email, isEmailVerified, req);
+
         _log.LogInformation("Customer synced: {Id} ({Email})", customer.CustomerId, customer.Email);
         return customer;
     }

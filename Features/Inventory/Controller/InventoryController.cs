@@ -1,8 +1,10 @@
 namespace LinenLady.Inventory.Api.Controllers;
 
+using LinenLady.API.Api.Auth;
 using LinenLady.API.Contracts;
 using LinenLady.API.Inventory.Items.Handler;
 using LinenLady.API.Inventory.Sql;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
@@ -15,6 +17,7 @@ public sealed class InventoryController(
     CreateItemsHandler createHandler) : ControllerBase
 {
     // POST /items/drafts
+    [Authorize(Policy = AuthPolicies.Admin)]
     [HttpPost("drafts")]
     public async Task<IActionResult> CreateDrafts(
         [FromBody] CreateItemsRequest? body,
@@ -26,7 +29,8 @@ public sealed class InventoryController(
         return Ok(result);
     }
 
-    // GET /items
+    // GET /items  — public storefront
+    [AllowAnonymous]
     [HttpGet]
     public async Task<IActionResult> GetItems(
         [FromQuery] int page = 1,
@@ -51,7 +55,8 @@ public sealed class InventoryController(
         };
     }
 
-    // GET /items/counts
+    // GET /items/counts  — admin dashboard metric
+    [Authorize(Policy = AuthPolicies.Admin)]
     [HttpGet("counts")]
     public async Task<IActionResult> GetCounts(CancellationToken ct)
     {
@@ -59,7 +64,8 @@ public sealed class InventoryController(
         return Ok(counts);
     }
 
-    // GET /items/{id:int}
+    // GET /items/{id:int}  — public storefront
+    [AllowAnonymous]
     [HttpGet("{id:int}")]
     public async Task<IActionResult> GetById(int id, CancellationToken ct)
     {
@@ -69,7 +75,8 @@ public sealed class InventoryController(
         return item is null ? NotFound("Item not found.") : Ok(item);
     }
 
-    // GET /items/sku/{sku}
+    // GET /items/sku/{sku}  — public storefront
+    [AllowAnonymous]
     [HttpGet("sku/{sku}")]
     public async Task<IActionResult> GetBySku(string sku, CancellationToken ct)
     {
@@ -80,6 +87,7 @@ public sealed class InventoryController(
     }
 
     // PATCH /items/{id:int}
+    [Authorize(Policy = AuthPolicies.Admin)]
     [HttpPatch("{id:int}")]
     public async Task<IActionResult> UpdateItem(
         int id,
@@ -99,6 +107,7 @@ public sealed class InventoryController(
     }
 
     // DELETE /items/{id:int}
+    [Authorize(Policy = AuthPolicies.Admin)]
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> SoftDelete(int id, CancellationToken ct)
     {

@@ -1,14 +1,17 @@
 namespace LinenLady.API.Controllers;
 
+using LinenLady.API.Api.Auth;
 using LinenLady.API.Contracts;
 using LinenLady.API.Site.Handler;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
 [Route("site/hero")]
 public sealed class SiteHeroController(SiteHeroHandler handler) : ControllerBase
 {
-    // GET /site/hero?activeOnly=true
+    // GET /site/hero?activeOnly=true  — public site
+    [AllowAnonymous]
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] bool activeOnly = false,
@@ -19,6 +22,7 @@ public sealed class SiteHeroController(SiteHeroHandler handler) : ControllerBase
     }
 
     // POST /site/hero
+    [Authorize(Policy = AuthPolicies.Admin)]
     [HttpPost]
     public async Task<IActionResult> Create(
         [FromBody] UpsertHeroSlideRequest? body,
@@ -33,6 +37,7 @@ public sealed class SiteHeroController(SiteHeroHandler handler) : ControllerBase
     // PATCH /site/hero/reorder
     // Declared before the {id:int} route — literal paths always win over
     // constrained params, but being explicit prevents accidents later.
+    [Authorize(Policy = AuthPolicies.Admin)]
     [HttpPatch("reorder")]
     public async Task<IActionResult> Reorder(
         [FromBody] ReorderHeroSlidesRequest? body,
@@ -46,6 +51,7 @@ public sealed class SiteHeroController(SiteHeroHandler handler) : ControllerBase
     }
 
     // PATCH /site/hero/{id}
+    [Authorize(Policy = AuthPolicies.Admin)]
     [HttpPatch("{id:int}")]
     public async Task<IActionResult> Update(
         int id,
@@ -59,6 +65,7 @@ public sealed class SiteHeroController(SiteHeroHandler handler) : ControllerBase
     }
 
     // DELETE /site/hero/{id}
+    [Authorize(Policy = AuthPolicies.Admin)]
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Delete(int id, CancellationToken ct)
     {
