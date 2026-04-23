@@ -8,7 +8,7 @@ using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
 [Authorize(Policy = AuthPolicies.Admin)]
-[Route("items/{id:int}")]
+[Route("api/items/{id:int}")]
 public sealed class AiEmbeddingsController(IAiEmbeddingsService service) : ControllerBase
 {
     [HttpPost("vectors/refresh")]

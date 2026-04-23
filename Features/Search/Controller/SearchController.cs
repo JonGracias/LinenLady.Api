@@ -6,7 +6,7 @@ using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
 [AllowAnonymous]
-[Route("items/{id:int}")]
+[Route("api/items/{id:int}")]
 public sealed class SearchController(SimilarItemsHandler handler) : ControllerBase
 {
     // GET /items/{id}/similar?top=10&publishedOnly=true&minScore=0.0

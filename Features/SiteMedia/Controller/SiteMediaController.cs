@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
-[Route("site/media")]
+[Route("api/site/media")]
 public sealed class SiteMediaController(SiteMediaHandler handler) : ControllerBase
 {
     // GET /site/media  — public site

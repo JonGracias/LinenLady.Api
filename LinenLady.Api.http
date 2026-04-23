@@ -4,7 +4,5 @@
 GET {{baseUrl}}/api/health
 Accept: application/json
 
-GET {{baseUrl}}/weatherforecast/
-Accept: application/json
 
 ###

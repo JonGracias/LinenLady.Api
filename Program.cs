@@ -171,10 +171,19 @@ builder.Services.AddScoped<SiteConfigHandler>();
 builder.Services.AddScoped<SiteHeroHandler>();
 
 // ─── MVC + global exception filter ───────────────────────────────────────────
+// PropertyNamingPolicy = null preserves DTO property names as-declared
+// (PascalCase). Frontend TypeScript types use PascalCase throughout, and
+// changing every type annotation and property access on the frontend would be
+// a much larger refactor than pinning the JSON naming policy here.
 builder.Services.AddControllers(options =>
 {
     options.Filters.Add<DomainExceptionFilter>();
+})
+.AddJsonOptions(opt =>
+{
+    opt.JsonSerializerOptions.PropertyNamingPolicy = null;
 });
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 

@@ -8,7 +8,7 @@ using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
 [Authorize(Policy = AuthPolicies.Admin)]
-[Route("items/{id:int}")]
+[Route("api/items/{id:int}")]
 public sealed class AiKeywordsController(IAiKeywordsService service) : ControllerBase
 {
     [HttpPost("keywords/generate")]

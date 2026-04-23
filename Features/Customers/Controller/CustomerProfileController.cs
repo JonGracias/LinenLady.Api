@@ -8,7 +8,7 @@ using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
 [Authorize(Policy = AuthPolicies.Customer)]
-[Route("customers")]
+[Route("api/customers")]
 public sealed class CustomerProfileController(
     SyncCustomerHandler syncHandler,
     GetMyProfileHandler getProfileHandler,

@@ -7,9 +7,10 @@ public sealed class InventoryImagesQuery : IInventoryImagesQuery
 {
     private readonly string _connStr;
 
-    public InventoryImagesQuery(string connStr)
+    public InventoryImagesQuery(IConfiguration configuration)
     {
-        _connStr = connStr;
+        _connStr = configuration.GetConnectionString("Sql")
+            ?? throw new InvalidOperationException("Missing connection string 'Sql'.");
     }
 
     public async Task<bool> ItemExists(int inventoryId, CancellationToken ct)

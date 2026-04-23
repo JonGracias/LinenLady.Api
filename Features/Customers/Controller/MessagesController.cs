@@ -8,7 +8,7 @@ using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
 [Authorize(Policy = AuthPolicies.Customer)]
-[Route("customers/me/messages")]
+[Route("api/customers/me/messages")]
 public sealed class MessagesController(MessageHandler handler) : ControllerBase
 {
     // GET /customers/me/messages

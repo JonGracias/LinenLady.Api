@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
-[Route("site/config")]
+[Route("api/site/config")]
 public sealed class SiteConfigController(SiteConfigHandler handler) : ControllerBase
 {
     // GET /site/config  — public site reads these

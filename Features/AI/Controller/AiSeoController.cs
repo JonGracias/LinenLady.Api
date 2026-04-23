@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
 [Authorize(Policy = AuthPolicies.Admin)]
-[Route("items/{id:int}")]
+[Route("api/items/{id:int}")]
 public sealed class AiSeoController(IAiSeoService service) : ControllerBase
 {
     [HttpPost("seo/generate")]

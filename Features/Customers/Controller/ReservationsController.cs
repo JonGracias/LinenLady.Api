@@ -14,7 +14,7 @@ public sealed class ReservationsController(
     SquareWebhookHandler webhookHandler) : ControllerBase
 {
     // POST /reservations
-    [HttpPost("reservations")]
+    [HttpPost("api/reservations")]
     public async Task<IActionResult> Create(
         [FromBody] CreateReservationRequest? body,
         CancellationToken ct)
@@ -28,7 +28,7 @@ public sealed class ReservationsController(
     }
 
     // PATCH /reservations/{id}/cancel
-    [HttpPatch("reservations/{reservationId:int}/cancel")]
+    [HttpPatch("api/reservations/{reservationId:int}/cancel")]
     public async Task<IActionResult> Cancel(
         int reservationId,
         CancellationToken ct)
@@ -46,7 +46,7 @@ public sealed class ReservationsController(
     // token from Square, but the handler itself should reject unsigned/invalid
     // payloads once verification is wired in.
     [AllowAnonymous]
-    [HttpPost("square/webhook")]
+    [HttpPost("api/square/webhook")]
     public async Task<IActionResult> SquareWebhook(CancellationToken ct)
     {
         using var reader = new StreamReader(Request.Body);

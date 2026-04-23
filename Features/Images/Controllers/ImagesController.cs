@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
-[Route("items/{id:int}/images")]
+[Route("api/items/{id:int}/images")]
 public sealed class ImagesController(
     GetImagesHandler getHandler,
     AddImagesHandler addHandler,

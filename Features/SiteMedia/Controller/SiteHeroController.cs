@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
-[Route("site/hero")]
+[Route("api/site/hero")]
 public sealed class SiteHeroController(SiteHeroHandler handler) : ControllerBase
 {
     // GET /site/hero?activeOnly=true  — public site

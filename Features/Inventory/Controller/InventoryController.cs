@@ -8,7 +8,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
-[Route("items")]
+[Route("api/items")]
 public sealed class InventoryController(
     IInventoryRepository repo,
     GetItemsHandler listHandler,

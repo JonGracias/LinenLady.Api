@@ -8,7 +8,7 @@ using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
 [Authorize(Policy = AuthPolicies.Admin)]
-[Route("items/{id:int}/ai-meta")]
+[Route("api/items/{id:int}/ai-meta")]
 public sealed class InventoryAiMetaController(IInventoryAiMetaRepository repo) : ControllerBase
 {
     // GET /items/{id}/ai-meta
