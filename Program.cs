@@ -9,7 +9,7 @@ using LinenLady.API.Api.Auth;
 using LinenLady.API.Api.Filters;
 using LinenLady.API.BackgroundServices;
 using LinenLady.API.Blob.Options;
-using LinenLady.API.Customer.Sql;
+using LinenLady.API.Customers.Sql;
 using LinenLady.API.Customers.Handler;
 using LinenLady.API.Inventory.AiMeta.Sql;
 using LinenLady.API.Inventory.Images.Handler;

@@ -86,7 +86,7 @@ public record ReservationDto(
     // Denormalized for convenience
     string?  ItemName,
     string?  ItemSku,
-    string?  ItemPublicId,
+    Guid?    ItemPublicId,
     string?  ThumbnailUrl
 );
 

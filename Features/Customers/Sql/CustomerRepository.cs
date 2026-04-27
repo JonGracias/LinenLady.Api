@@ -1,4 +1,4 @@
-namespace LinenLady.API.Customer.Sql;
+namespace LinenLady.API.Customers.Sql;
 
 using System.Data;
 using Dapper;
@@ -248,7 +248,7 @@ public class CustomerRepository : ICustomerRepository
             i.Name      AS ItemName,
             i.Sku       AS ItemSku,
             i.PublicId  AS ItemPublicId,
-            NULL        AS ThumbnailUrl
+            CAST(NULL AS NVARCHAR(2048)) AS ThumbnailUrl
         FROM cust.Reservation r
         JOIN inv.Inventory    i ON i.InventoryId = r.InventoryId
         """;

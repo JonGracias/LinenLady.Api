@@ -1,7 +1,7 @@
 namespace LinenLady.API.Customers.Handler;
 
 using LinenLady.API.Contracts;
-using LinenLady.API.Customer.Sql;
+using LinenLady.API.Customers.Sql;
 using LinenLady.API.Square;
 
 // ── Exceptions ───────────────────────────────────────────────
