@@ -1,7 +1,7 @@
 namespace LinenLady.Inventory.Api.Controllers;
 
 using LinenLady.API.AI.Prefill.Service;
-using LinenLady.API.Api.Auth;
+using LinenLady.API.Auth;
 using LinenLady.API.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;

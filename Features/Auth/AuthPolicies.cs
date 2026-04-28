@@ -1,4 +1,4 @@
-namespace LinenLady.API.Api.Auth;
+namespace LinenLady.API.Auth;
 
 /// <summary>
 /// Authorization policy names. Used with <c>[Authorize(Policy = ...)]</c>

@@ -1,6 +1,6 @@
 namespace LinenLady.Inventory.Api.Controllers;
 
-using LinenLady.API.Api.Auth;
+using LinenLady.API.Auth;
 using LinenLady.API.Contracts;
 using LinenLady.API.Inventory.Items.Handler;
 using LinenLady.API.Inventory.Sql;

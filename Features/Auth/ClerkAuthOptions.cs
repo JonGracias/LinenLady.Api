@@ -1,4 +1,4 @@
-namespace LinenLady.API.Api.Auth;
+namespace LinenLady.API.Auth;
 
 /// <summary>
 /// Configuration for Clerk JWT validation. Bound from the "Clerk" section

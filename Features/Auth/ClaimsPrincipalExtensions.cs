@@ -1,4 +1,4 @@
-namespace LinenLady.API.Api.Auth;
+namespace LinenLady.API.Auth;
 
 using System.Security.Claims;
 using System.Text.Json;

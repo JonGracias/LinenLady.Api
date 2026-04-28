@@ -1,6 +1,6 @@
 namespace LinenLady.API.Controllers;
 
-using LinenLady.API.Api.Auth;
+using LinenLady.API.Auth;
 using LinenLady.API.Contracts;
 using LinenLady.API.Site.Handler;
 using Microsoft.AspNetCore.Authorization;

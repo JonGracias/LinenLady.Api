@@ -1,7 +1,7 @@
 namespace LinenLady.API.Controllers;
 
 using LinenLady.API.AI.Seo.Service;
-using LinenLady.API.Api.Auth;
+using LinenLady.API.Auth;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 

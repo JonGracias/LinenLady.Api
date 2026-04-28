@@ -5,7 +5,7 @@ using LinenLady.API.AI.Options;
 using LinenLady.API.AI.Prefill.Service;
 using LinenLady.API.AI.Rewrite.Service;
 using LinenLady.API.AI.Seo.Service;
-using LinenLady.API.Api.Auth;
+using LinenLady.API.Auth;
 using LinenLady.API.Api.Filters;
 using LinenLady.API.BackgroundServices;
 using LinenLady.API.Blob.Options;
