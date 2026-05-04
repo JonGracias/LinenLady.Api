@@ -5,7 +5,7 @@ using Dapper;
 using LinenLady.API.Contracts;
 using Microsoft.Data.SqlClient;
 
-public interface ICustomerRepository
+public partial interface ICustomerRepository
 {
     Task<CustomerDto?>          GetByClerkIdAsync(string clerkUserId);
     Task<CustomerDto>           UpsertAsync(string clerkUserId, string email, bool isEmailVerified, UpsertCustomerRequest req);
@@ -49,7 +49,7 @@ public interface ICustomerRepository
     Task LogNotificationAsync(int customerId, int? reservationId, string type, bool success, string? error = null);
 }
 
-public class CustomerRepository : ICustomerRepository
+public partial class CustomerRepository : ICustomerRepository
 {
     private readonly string _connectionString;
 

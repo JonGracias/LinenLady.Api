@@ -233,7 +233,7 @@ public sealed class CreateReservationHandler
                 "Address lookup failed for customer {Id} (non-fatal).",
                 customer.CustomerId);
         }
-        
+
         // Square payment link — non-fatal on failure
         try
         {
@@ -283,7 +283,7 @@ public sealed class CreateReservationHandler
 
             await _repo.SendMessageAsync(
                 customer.CustomerId,
-                new SendMessageRequest(body, reservation.ReservationId),
+                new SendMessageRequest(body, reservation.ReservationId, OrderId: null),
                 direction: "Inbound");
         }
         catch (Exception ex)
@@ -326,47 +326,6 @@ public sealed class CancelReservationHandler
 
         return await _repo.UpdateReservationStatusAsync(reservationId, "Cancelled")
             ?? throw new ReservationNotFoundException("Update failed.");
-    }
-}
-
-// ─────────────────────────────────────────────────────────────
-
-public sealed class SquareWebhookHandler
-{
-    private readonly ICustomerRepository _repo;
-    private readonly ILogger<SquareWebhookHandler> _log;
-
-    public SquareWebhookHandler(ICustomerRepository repo, ILogger<SquareWebhookHandler> log)
-    {
-        _repo = repo;
-        _log = log;
-    }
-
-    public async Task HandleAsync(string rawBody, CancellationToken ct)
-    {
-        using var doc = System.Text.Json.JsonDocument.Parse(rawBody);
-        var root = doc.RootElement;
-        var eventType = root.GetProperty("type").GetString();
-
-        if (eventType != "payment.completed" && eventType != "order.fulfillment.updated")
-            return;
-
-        var referenceId = root
-            .GetProperty("data").GetProperty("object")
-            .GetProperty("order").GetProperty("reference_id")
-            .GetString();
-
-        if (referenceId?.StartsWith("RES-") != true) return;
-        if (!int.TryParse(referenceId[4..], out var reservationId)) return;
-
-        var updated = await _repo.UpdateReservationStatusAsync(reservationId, "Completed");
-        if (updated is null) return;
-
-        await _repo.LogNotificationAsync(
-            updated.CustomerId, reservationId, "PaymentReceived", true);
-
-        _log.LogInformation(
-            "Reservation {Id} marked Completed via Square webhook.", reservationId);
     }
 }
 
@@ -484,7 +443,7 @@ public sealed class AdminSendMessageHandler
 
         return await _repo.SendMessageAsync(
             customerId,
-            new SendMessageRequest(req.Body, req.ReservationId),
+            new SendMessageRequest(req.Body, req.ReservationId, req.OrderId),
             direction: "Outbound");
     }
 }

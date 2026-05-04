@@ -25,6 +25,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.Tokens;
 using LinenLady.API.Contracts;
+using LinenLady.API.Customers.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -153,8 +154,6 @@ builder.Services.AddScoped<UpdateProfileHandler>();
 builder.Services.AddScoped<UpsertAddressHandler>();
 builder.Services.AddScoped<DeleteAddressHandler>();
 builder.Services.AddScoped<SetPreferencesHandler>();
-builder.Services.AddScoped<CreateReservationHandler>();
-builder.Services.AddScoped<CancelReservationHandler>();
 builder.Services.AddScoped<SquareWebhookHandler>();
 builder.Services.AddScoped<ExpireReservationsHandler>();
 builder.Services.AddScoped<MessageHandler>();
@@ -162,6 +161,15 @@ builder.Services.AddScoped<GetConversationsHandler>();
 builder.Services.AddScoped<GetConversationThreadHandler>();
 builder.Services.AddScoped<AdminSendMessageHandler>();
 builder.Services.AddScoped<GetTotalUnreadInboundHandler>();
+builder.Services.AddScoped<GetBasketHandler>();
+builder.Services.AddScoped<AddToBasketHandler>();
+builder.Services.AddScoped<RemoveFromBasketHandler>();
+builder.Services.AddScoped<ReAddToBasketHandler>();
+builder.Services.AddScoped<CheckoutHandler>();
+builder.Services.AddScoped<GetMyOrdersHandler>();
+builder.Services.AddScoped<GetOrderByIdHandler>();
+builder.Services.AddScoped<AskNoemiHandler>();
+builder.Services.AddScoped<ExpireStaleOrdersHandler>();
 
 // Square
 builder.Services.AddHttpClient("square");
@@ -169,6 +177,7 @@ builder.Services.AddScoped<ISquareService, SquareService>();
 
 // Background job: hourly reservation expiration (replaces the old timer-trigger)
 builder.Services.AddHostedService<ExpireReservationsBackgroundService>();
+builder.Services.AddHostedService<ExpireStaleOrdersBackgroundService>();
 
 // ─── Site ────────────────────────────────────────────────────────────────────
 builder.Services.AddScoped<ISiteRepository, SiteRepository>();

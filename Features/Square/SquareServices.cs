@@ -8,7 +8,7 @@ using Microsoft.Extensions.Options;
 
 namespace LinenLady.API.Square;
 
-public interface ISquareService
+public partial interface ISquareService
 {
     Task<SquarePaymentLinkResult> CreatePaymentLinkAsync(
         int                  reservationId,
@@ -21,7 +21,7 @@ public interface ISquareService
     );
 }
 
-public class SquareService : ISquareService
+public partial class SquareService : ISquareService
 {
     private readonly HttpClient _http;
     private readonly string     _locationId;

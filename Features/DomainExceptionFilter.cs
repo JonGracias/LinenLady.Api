@@ -37,6 +37,8 @@ public sealed class DomainExceptionFilter : IExceptionFilter
             CustomerNotFoundException ex     => (404, ex.Message),
             ReservationNotFoundException ex  => (404, ex.Message),
             ItemNotFoundException ex         => (404, ex.Message),
+            AddressNotFoundException ex      => (404, ex.Message),
+            OrderNotFoundException ex        => (404, ex.Message), 
             ReservationConflictException ex  => (409, ex.Message),
             ItemAlreadyReservedException ex  => (409, ex.Message),
             EmailNotVerifiedException ex     => (403, ex.Message),

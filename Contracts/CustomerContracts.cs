@@ -71,26 +71,6 @@ public record SetPreferencesRequest(
 
 // ── Reservation ───────────────────────────────────────────────
 
-public record ReservationDto(
-    
-    int      ReservationId,
-    int      CustomerId,
-    int      InventoryId,
-    string   Status,
-    DateTime ReservedAt,
-    DateTime ExpiresAt,
-    DateTime? PaymentSentAt,
-    DateTime? CompletedAt,
-    string?  CustomerNotes,
-    string?  SquarePaymentLinkUrl,
-    int      AmountCents,
-    // Denormalized for convenience
-    string?  ItemName,
-    string?  ItemSku,
-    Guid?    ItemPublicId,
-    string?  ThumbnailUrl
-);
-
 public record CreateReservationRequest(
     int     InventoryId,
     string? CustomerNotes
@@ -98,23 +78,6 @@ public record CreateReservationRequest(
 
 public record CancelReservationRequest(
     string? Reason
-);
-
-// ── Message ───────────────────────────────────────────────────
-
-public record MessageDto(
-    int      MessageId,
-    int      CustomerId,
-    int?     ReservationId,
-    string   Direction,   // Inbound | Outbound
-    string   Body,
-    bool     IsRead,
-    DateTime SentAt
-);
-
-public record SendMessageRequest(
-    string Body,
-    int?   ReservationId
 );
 
 // ── Admin: Conversations ──────────────────────────────────────
@@ -138,7 +101,8 @@ public record ConversationSummaryDto(
 
 public record AdminSendMessageRequest(
     string Body,
-    int?   ReservationId
+    int?   ReservationId,
+    int?   OrderId
 );
 
 public record UnreadCountDto(int Count);
