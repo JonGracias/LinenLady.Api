@@ -14,6 +14,23 @@ public sealed class DomainExceptionFilter : IExceptionFilter
 {
     public void OnException(ExceptionContext context)
     {
+        // Special case: structured-body 409 so the frontend can read the
+        // existing reservation id and forward the user to their list.
+        if (context.Exception is ItemAlreadyReservedByYouException already)
+        {
+            context.Result = new ObjectResult(new
+            {
+                reason        = "already_reserved_by_you",
+                message       = already.Message,
+                reservationId = already.ReservationId,
+            })
+            {
+                StatusCode = 409,
+            };
+            context.ExceptionHandled = true;
+            return;
+        }
+
         var (status, message) = context.Exception switch
         {
             // Customer/reservation domain

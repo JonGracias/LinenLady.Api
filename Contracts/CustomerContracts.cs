@@ -72,6 +72,7 @@ public record SetPreferencesRequest(
 // ── Reservation ───────────────────────────────────────────────
 
 public record ReservationDto(
+    
     int      ReservationId,
     int      CustomerId,
     int      InventoryId,
@@ -115,6 +116,32 @@ public record SendMessageRequest(
     string Body,
     int?   ReservationId
 );
+
+// ── Admin: Conversations ──────────────────────────────────────
+//
+// A "conversation" is one row per customer in the admin inbox view —
+// the customer record plus aggregates over their messages (last message,
+// unread inbound count, last activity timestamp). The thread itself is
+// just the existing MessageDto list.
+
+public record ConversationSummaryDto(
+    int      CustomerId,
+    string   Email,
+    string?  FirstName,
+    string?  LastName,
+    string?  LastMessageBody,        // truncated server-side
+    string?  LastMessageDirection,   // Inbound | Outbound
+    DateTime? LastMessageAt,
+    int      UnreadInboundCount,
+    int      TotalMessages
+);
+
+public record AdminSendMessageRequest(
+    string Body,
+    int?   ReservationId
+);
+
+public record UnreadCountDto(int Count);
 
 // ── Square ────────────────────────────────────────────────────
 

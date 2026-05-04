@@ -22,6 +22,18 @@ public sealed class MessagesController(MessageHandler handler) : ControllerBase
         return Ok(result);
     }
 
+    // GET /customers/me/messages/unread-count
+    // Lightweight header-badge poll — no side effects, doesn't mark read.
+    [HttpGet("unread-count")]
+    public async Task<IActionResult> GetUnreadCount(CancellationToken ct)
+    {
+        var clerkUserId = User.GetClerkUserId();
+        if (clerkUserId is null) return Unauthorized();
+
+        var result = await handler.GetUnreadCountAsync(clerkUserId, ct);
+        return Ok(result);
+    }
+
     // POST /customers/me/messages
     [HttpPost]
     public async Task<IActionResult> SendMessage(

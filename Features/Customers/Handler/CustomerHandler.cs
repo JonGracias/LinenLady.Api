@@ -9,6 +9,20 @@ using LinenLady.API.Square;
 public sealed class CustomerNotFoundException    : Exception { public CustomerNotFoundException(string m)    : base(m) {} }
 public sealed class EmailNotVerifiedException    : Exception { public EmailNotVerifiedException(string m)    : base(m) {} }
 public sealed class ItemAlreadyReservedException : Exception { public ItemAlreadyReservedException(string m) : base(m) {} }
+
+/// <summary>
+/// Customer is trying to reserve an item they already have an active
+/// reservation for. Distinct from ItemAlreadyReservedException (which fires
+/// when *someone else* holds the item) so the frontend can route the user
+/// to their existing reservation instead of showing an error.
+/// </summary>
+public sealed class ItemAlreadyReservedByYouException : Exception
+{
+    public int ReservationId { get; }
+    public ItemAlreadyReservedByYouException(int reservationId, string m)
+        : base(m) { ReservationId = reservationId; }
+}
+
 public sealed class ItemNotFoundException        : Exception { public ItemNotFoundException(string m)        : base(m) {} }
 public sealed class ReservationNotFoundException : Exception { public ReservationNotFoundException(string m) : base(m) {} }
 public sealed class ReservationConflictException : Exception { public ReservationConflictException(string m) : base(m) {} }
@@ -181,26 +195,56 @@ public sealed class CreateReservationHandler
             throw new EmailNotVerifiedException(
                 "Email verification required before reserving an item.");
 
-        if (await _repo.IsItemReservedAsync(req.InventoryId))
+        // Distinguish "you already reserved this" from "someone else has it"
+        // so the frontend can route accordingly. The product-level decision:
+        // re-clicking Reserve on a piece you already hold should silently
+        // forward to your reservations list, not show a confusing error.
+        var existing = await _repo.GetActiveReservationForItemAsync(req.InventoryId);
+        if (existing is not null)
+        {
+            if (existing.CustomerId == customer.CustomerId)
+                throw new ItemAlreadyReservedByYouException(
+                    existing.ReservationId,
+                    "You already have an active reservation for this piece.");
+
             throw new ItemAlreadyReservedException(
                 "This item is currently reserved by another customer.");
+        }
 
         // Repo-backed price lookup — replaces the old env-var SQL call
         var amountCents = await _repo.GetAvailableItemPriceCentsAsync(req.InventoryId)
             ?? throw new ItemNotFoundException($"Item {req.InventoryId} not found or unavailable.");
 
         var reservation = await _repo.CreateReservationAsync(customer.CustomerId, req, amountCents);
-
+        
+        // Pre-populate Square's address form with the customer's default address.
+        // Falls back to a no-address payment link if they haven't saved one — they
+        // can still enter it on Square's checkout page.
+        CustomerAddressDto? defaultAddress = null;
+        try
+        {
+            var addresses = await _repo.GetAddressesAsync(customer.CustomerId);
+            defaultAddress = addresses.FirstOrDefault(a => a.IsDefault)
+                        ?? addresses.FirstOrDefault();
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex,
+                "Address lookup failed for customer {Id} (non-fatal).",
+                customer.CustomerId);
+        }
+        
         // Square payment link — non-fatal on failure
         try
         {
             var link = await _square.CreatePaymentLinkAsync(
                 reservationId: reservation.ReservationId,
-                itemName:      reservation.ItemName ?? "Linen Lady Item",
+                itemName:      reservation.ItemName ?? "Noemi The Linen Lady Item",
                 itemSku:       reservation.ItemSku  ?? "",
                 amountCents:   amountCents,
                 customerEmail: customer.Email,
-                customerName:  $"{customer.FirstName} {customer.LastName}".Trim()
+                customerName:  $"{customer.FirstName} {customer.LastName}".Trim(),
+                shippingAddress:  defaultAddress
             );
 
             reservation = await _repo.SetPaymentLinkAsync(reservation.ReservationId, link) ?? reservation;
@@ -220,6 +264,34 @@ public sealed class CreateReservationHandler
 
         await _repo.LogNotificationAsync(
             customer.CustomerId, reservation.ReservationId, "ReservationConfirmed", true);
+
+        // Indeed-style: every reservation also lands as an inbound message in
+        // the customer<->admin thread, so Noemi sees it in the same inbox where
+        // she replies to general inquiries. Failure here is non-fatal — the
+        // reservation itself is the source of truth; the message is a
+        // convenience surface.
+        try
+        {
+            var notes = string.IsNullOrWhiteSpace(req.CustomerNotes)
+                ? null
+                : $"\n\nNotes: {req.CustomerNotes!.Trim()}";
+
+            var body =
+                $"Reserved: {reservation.ItemName ?? "Linen Lady item"}"
+              + (string.IsNullOrWhiteSpace(reservation.ItemSku) ? "" : $" (SKU {reservation.ItemSku})")
+              + $".{notes}";
+
+            await _repo.SendMessageAsync(
+                customer.CustomerId,
+                new SendMessageRequest(body, reservation.ReservationId),
+                direction: "Inbound");
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex,
+                "Auto-message for reservation {Id} failed (non-fatal).",
+                reservation.ReservationId);
+        }
 
         _log.LogInformation(
             "Reservation {Id} created for customer {CustomerId}, item {InventoryId}.",
@@ -348,5 +420,83 @@ public sealed class MessageHandler
             ?? throw new CustomerNotFoundException("Profile not found.");
 
         return await _repo.SendMessageAsync(customer.CustomerId, req, "Inbound");
+    }
+
+    /// <summary>
+    /// Customer-side unread count — number of admin replies the customer
+    /// hasn't yet viewed. Drives the badge on the storefront Account link.
+    /// </summary>
+    public async Task<UnreadCountDto> GetUnreadCountAsync(string clerkUserId, CancellationToken ct)
+    {
+        var customer = await _repo.GetByClerkIdAsync(clerkUserId)
+            ?? throw new CustomerNotFoundException("Profile not found.");
+
+        var n = await _repo.GetUnreadOutboundCountAsync(customer.CustomerId);
+        return new UnreadCountDto(n);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+//
+// Admin-side messaging handlers. These mirror the customer handlers but
+// operate on a customerId path parameter instead of resolving via the
+// caller's Clerk identity. The Admin authorization policy gates access.
+
+public sealed class GetConversationsHandler
+{
+    private readonly ICustomerRepository _repo;
+    public GetConversationsHandler(ICustomerRepository repo) => _repo = repo;
+
+    public async Task<List<ConversationSummaryDto>> HandleAsync(int take, CancellationToken ct)
+        => await _repo.GetConversationsAsync(take);
+}
+
+public sealed class GetConversationThreadHandler
+{
+    private readonly ICustomerRepository _repo;
+    public GetConversationThreadHandler(ICustomerRepository repo) => _repo = repo;
+
+    public async Task<List<MessageDto>> HandleAsync(int customerId, bool markRead, CancellationToken ct)
+    {
+        if (!await _repo.CustomerExistsAsync(customerId))
+            throw new CustomerNotFoundException("Customer not found.");
+
+        if (markRead)
+            await _repo.MarkInboundMessagesReadAsync(customerId);
+
+        return await _repo.GetMessagesAsync(customerId);
+    }
+}
+
+public sealed class AdminSendMessageHandler
+{
+    private readonly ICustomerRepository _repo;
+    public AdminSendMessageHandler(ICustomerRepository repo) => _repo = repo;
+
+    public async Task<MessageDto> HandleAsync(
+        int customerId, AdminSendMessageRequest req, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(req.Body))
+            throw new ArgumentException("Message body cannot be empty.");
+
+        if (!await _repo.CustomerExistsAsync(customerId))
+            throw new CustomerNotFoundException("Customer not found.");
+
+        return await _repo.SendMessageAsync(
+            customerId,
+            new SendMessageRequest(req.Body, req.ReservationId),
+            direction: "Outbound");
+    }
+}
+
+public sealed class GetTotalUnreadInboundHandler
+{
+    private readonly ICustomerRepository _repo;
+    public GetTotalUnreadInboundHandler(ICustomerRepository repo) => _repo = repo;
+
+    public async Task<UnreadCountDto> HandleAsync(CancellationToken ct)
+    {
+        var n = await _repo.GetTotalUnreadInboundCountAsync();
+        return new UnreadCountDto(n);
     }
 }

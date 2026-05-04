@@ -21,6 +21,14 @@ public interface ICustomerRepository
     Task<ReservationDto?>          GetReservationAsync(int reservationId);
     Task<List<ReservationDto>>     GetCustomerReservationsAsync(int customerId);
     Task<bool>                     IsItemReservedAsync(int inventoryId);
+    /// <summary>
+    /// Returns the currently-active reservation for a given item, if any —
+    /// active = Pending/Confirmed/PaymentSent and not yet expired. Used by
+    /// the reserve handler to distinguish "you've already reserved this"
+    /// from "someone else has it" so the frontend can route accordingly
+    /// (your reservation list vs. an error toast).
+    /// </summary>
+    Task<ReservationDto?>          GetActiveReservationForItemAsync(int inventoryId);
     Task<int?>                     GetAvailableItemPriceCentsAsync(int inventoryId); // NEW
     Task<ReservationDto>           CreateReservationAsync(int customerId, CreateReservationRequest req, int amountCents);
     Task<ReservationDto?>          UpdateReservationStatusAsync(int reservationId, string status);
@@ -30,6 +38,13 @@ public interface ICustomerRepository
     Task<List<MessageDto>>  GetMessagesAsync(int customerId, int? reservationId = null);
     Task<MessageDto>        SendMessageAsync(int customerId, SendMessageRequest req, string direction = "Inbound");
     Task                    MarkMessagesReadAsync(int customerId);
+
+    // Admin-side messaging
+    Task<List<ConversationSummaryDto>> GetConversationsAsync(int take = 100);
+    Task<int>                          GetTotalUnreadInboundCountAsync();
+    Task<int>                          GetUnreadOutboundCountAsync(int customerId);
+    Task                               MarkInboundMessagesReadAsync(int customerId);
+    Task<bool>                         CustomerExistsAsync(int customerId);
 
     Task LogNotificationAsync(int customerId, int? reservationId, string type, bool success, string? error = null);
 }
@@ -287,6 +302,30 @@ public class CustomerRepository : ICustomerRepository
         return count > 0;
     }
 
+    public async Task<ReservationDto?> GetActiveReservationForItemAsync(int inventoryId)
+    {
+        using var db = Connect();
+        return await db.QueryFirstOrDefaultAsync<ReservationDto>(
+            """
+            SELECT TOP 1
+                r.ReservationId, r.CustomerId, r.InventoryId,
+                r.Status, r.ReservedAt, r.ExpiresAt,
+                r.PaymentSentAt, r.CompletedAt, r.CustomerNotes,
+                r.SquarePaymentLinkUrl, r.AmountCents,
+                i.Name      AS ItemName,
+                i.Sku       AS ItemSku,
+                i.PublicId  AS ItemPublicId,
+                CAST(NULL AS NVARCHAR(2048)) AS ThumbnailUrl
+            FROM   cust.Reservation r
+            JOIN   inv.Inventory    i ON i.InventoryId = r.InventoryId
+            WHERE  r.InventoryId = @InventoryId
+              AND  r.Status IN ('Pending','Confirmed','PaymentSent')
+              AND  r.ExpiresAt > SYSUTCDATETIME()
+            ORDER BY r.ReservedAt DESC
+            """,
+            new { InventoryId = inventoryId });
+    }
+
     public async Task<int?> GetAvailableItemPriceCentsAsync(int inventoryId)
     {
         using var db = Connect();
@@ -302,20 +341,36 @@ public class CustomerRepository : ICustomerRepository
         int customerId, CreateReservationRequest req, int amountCents)
     {
         using var db = Connect();
+        // OUTPUT into a table var so we can join inv.Inventory afterward.
+        // OUTPUT clauses can only project from inserted/deleted, not joined
+        // rows, so the typed-NULL hack used to produce a row-shape that
+        // Dapper could materialize but the response never carried the actual
+        // item name/sku/thumbnail. Customers saw `itemName: null` in their
+        // reservation list. This pattern fixes that with one extra SELECT.
         return await db.QueryFirstAsync<ReservationDto>(
             """
+            DECLARE @Created TABLE (ReservationId INT);
+
             INSERT INTO cust.Reservation
                 (CustomerId, InventoryId, Status, ExpiresAt, CustomerNotes, AmountCents)
-            OUTPUT
-                inserted.ReservationId, inserted.CustomerId, inserted.InventoryId,
-                inserted.Status, inserted.ReservedAt, inserted.ExpiresAt,
-                inserted.PaymentSentAt, inserted.CompletedAt, inserted.CustomerNotes,
-                inserted.SquarePaymentLinkUrl, inserted.AmountCents,
-                NULL AS ItemName, NULL AS ItemSku, NULL AS ItemPublicId, NULL AS ThumbnailUrl
+            OUTPUT inserted.ReservationId INTO @Created
             VALUES
                 (@CustomerId, @InventoryId, 'Pending',
                  DATEADD(HOUR, 48, SYSUTCDATETIME()),
-                 @CustomerNotes, @AmountCents)
+                 @CustomerNotes, @AmountCents);
+
+            SELECT
+                r.ReservationId, r.CustomerId, r.InventoryId,
+                r.Status, r.ReservedAt, r.ExpiresAt,
+                r.PaymentSentAt, r.CompletedAt, r.CustomerNotes,
+                r.SquarePaymentLinkUrl, r.AmountCents,
+                i.Name      AS ItemName,
+                i.Sku       AS ItemSku,
+                i.PublicId  AS ItemPublicId,
+                CAST(NULL AS NVARCHAR(2048)) AS ThumbnailUrl
+            FROM   cust.Reservation r
+            JOIN   inv.Inventory    i ON i.InventoryId = r.InventoryId
+            WHERE  r.ReservationId = (SELECT TOP 1 ReservationId FROM @Created);
             """,
             new { CustomerId = customerId, req.InventoryId,
                   req.CustomerNotes, AmountCents = amountCents });
@@ -339,13 +394,20 @@ public class CustomerRepository : ICustomerRepository
             SET Status    = @Status,
                 UpdatedAt = SYSUTCDATETIME()
                 {setClause}
-            OUTPUT
-                inserted.ReservationId, inserted.CustomerId, inserted.InventoryId,
-                inserted.Status, inserted.ReservedAt, inserted.ExpiresAt,
-                inserted.PaymentSentAt, inserted.CompletedAt, inserted.CustomerNotes,
-                inserted.SquarePaymentLinkUrl, inserted.AmountCents,
-                NULL AS ItemName, NULL AS ItemSku, NULL AS ItemPublicId, NULL AS ThumbnailUrl
-            WHERE ReservationId = @ReservationId
+            WHERE ReservationId = @ReservationId;
+
+            SELECT
+                r.ReservationId, r.CustomerId, r.InventoryId,
+                r.Status, r.ReservedAt, r.ExpiresAt,
+                r.PaymentSentAt, r.CompletedAt, r.CustomerNotes,
+                r.SquarePaymentLinkUrl, r.AmountCents,
+                i.Name      AS ItemName,
+                i.Sku       AS ItemSku,
+                i.PublicId  AS ItemPublicId,
+                CAST(NULL AS NVARCHAR(2048)) AS ThumbnailUrl
+            FROM   cust.Reservation r
+            JOIN   inv.Inventory    i ON i.InventoryId = r.InventoryId
+            WHERE  r.ReservationId = @ReservationId;
             """,
             new { ReservationId = reservationId, Status = status });
     }
@@ -363,13 +425,20 @@ public class CustomerRepository : ICustomerRepository
                 Status               = 'PaymentSent',
                 PaymentSentAt        = SYSUTCDATETIME(),
                 UpdatedAt            = SYSUTCDATETIME()
-            OUTPUT
-                inserted.ReservationId, inserted.CustomerId, inserted.InventoryId,
-                inserted.Status, inserted.ReservedAt, inserted.ExpiresAt,
-                inserted.PaymentSentAt, inserted.CompletedAt, inserted.CustomerNotes,
-                inserted.SquarePaymentLinkUrl, inserted.AmountCents,
-                NULL AS ItemName, NULL AS ItemSku, NULL AS ItemPublicId, NULL AS ThumbnailUrl
-            WHERE ReservationId = @ReservationId
+            WHERE ReservationId = @ReservationId;
+
+            SELECT
+                r.ReservationId, r.CustomerId, r.InventoryId,
+                r.Status, r.ReservedAt, r.ExpiresAt,
+                r.PaymentSentAt, r.CompletedAt, r.CustomerNotes,
+                r.SquarePaymentLinkUrl, r.AmountCents,
+                i.Name      AS ItemName,
+                i.Sku       AS ItemSku,
+                i.PublicId  AS ItemPublicId,
+                CAST(NULL AS NVARCHAR(2048)) AS ThumbnailUrl
+            FROM   cust.Reservation r
+            JOIN   inv.Inventory    i ON i.InventoryId = r.InventoryId
+            WHERE  r.ReservationId = @ReservationId;
             """,
             new { ReservationId = reservationId,
                   link.PaymentLinkId, link.Url, link.OrderId });
@@ -437,6 +506,97 @@ public class CustomerRepository : ICustomerRepository
             WHERE CustomerId = @CustomerId AND Direction = 'Outbound' AND IsRead = 0
             """,
             new { CustomerId = customerId });
+    }
+
+    // ── Admin messaging ───────────────────────────────────────
+    //
+    // GetConversationsAsync returns one row per customer-with-messages,
+    // ordered by most recent activity. The aggregation is done in SQL
+    // (CROSS APPLY for the latest message + a correlated COUNT for unread)
+    // so the admin inbox renders in a single round-trip even with hundreds
+    // of customers. UnreadInboundCount is messages from the customer that
+    // the admin hasn't acknowledged yet — i.e. the badge count.
+
+    public async Task<List<ConversationSummaryDto>> GetConversationsAsync(int take = 100)
+    {
+        using var db = Connect();
+        var rows = await db.QueryAsync<ConversationSummaryDto>(
+            """
+            SELECT TOP (@Take)
+                c.CustomerId,
+                c.Email,
+                c.FirstName,
+                c.LastName,
+                LEFT(latest.Body, 200)  AS LastMessageBody,
+                latest.Direction        AS LastMessageDirection,
+                latest.SentAt           AS LastMessageAt,
+                ISNULL(unread.Cnt, 0)   AS UnreadInboundCount,
+                ISNULL(total.Cnt, 0)    AS TotalMessages
+            FROM cust.Customer c
+            CROSS APPLY (
+                SELECT TOP 1 m.Body, m.Direction, m.SentAt
+                FROM   cust.Message m
+                WHERE  m.CustomerId = c.CustomerId
+                ORDER BY m.SentAt DESC
+            ) AS latest
+            OUTER APPLY (
+                SELECT COUNT(1) AS Cnt
+                FROM   cust.Message m
+                WHERE  m.CustomerId = c.CustomerId
+                  AND  m.Direction  = 'Inbound'
+                  AND  m.IsRead     = 0
+            ) AS unread
+            OUTER APPLY (
+                SELECT COUNT(1) AS Cnt
+                FROM   cust.Message m
+                WHERE  m.CustomerId = c.CustomerId
+            ) AS total
+            WHERE c.IsActive = 1
+            ORDER BY latest.SentAt DESC
+            """,
+            new { Take = take });
+        return rows.ToList();
+    }
+
+    public async Task<int> GetTotalUnreadInboundCountAsync()
+    {
+        using var db = Connect();
+        return await db.ExecuteScalarAsync<int>(
+            """
+            SELECT COUNT(1) FROM cust.Message
+            WHERE Direction = 'Inbound' AND IsRead = 0
+            """);
+    }
+
+    public async Task<int> GetUnreadOutboundCountAsync(int customerId)
+    {
+        using var db = Connect();
+        return await db.ExecuteScalarAsync<int>(
+            """
+            SELECT COUNT(1) FROM cust.Message
+            WHERE CustomerId = @CustomerId AND Direction = 'Outbound' AND IsRead = 0
+            """,
+            new { CustomerId = customerId });
+    }
+
+    public async Task MarkInboundMessagesReadAsync(int customerId)
+    {
+        using var db = Connect();
+        await db.ExecuteAsync(
+            """
+            UPDATE cust.Message SET IsRead = 1
+            WHERE CustomerId = @CustomerId AND Direction = 'Inbound' AND IsRead = 0
+            """,
+            new { CustomerId = customerId });
+    }
+
+    public async Task<bool> CustomerExistsAsync(int customerId)
+    {
+        using var db = Connect();
+        var n = await db.ExecuteScalarAsync<int>(
+            "SELECT COUNT(1) FROM cust.Customer WHERE CustomerId = @CustomerId AND IsActive = 1",
+            new { CustomerId = customerId });
+        return n > 0;
     }
 
     // ── Notifications ─────────────────────────────────────────

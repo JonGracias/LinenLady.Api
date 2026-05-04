@@ -24,6 +24,7 @@ using LinenLady.API.Square;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.Tokens;
+using LinenLady.API.Contracts;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -107,6 +108,8 @@ builder.Services.AddAuthorization(options =>
         .RequireAuthenticatedUser()
         .Build();
 });
+// ─── Frontend Options ──────────────────────────────────────────────────────
+builder.Services.Configure<FrontendOptions>(builder.Configuration.GetSection("Frontend"));
 
 // ─── AI: shared clients ──────────────────────────────────────────────────────
 // Both clients receive HttpClient via IHttpClientFactory so retry/timeout
@@ -155,6 +158,10 @@ builder.Services.AddScoped<CancelReservationHandler>();
 builder.Services.AddScoped<SquareWebhookHandler>();
 builder.Services.AddScoped<ExpireReservationsHandler>();
 builder.Services.AddScoped<MessageHandler>();
+builder.Services.AddScoped<GetConversationsHandler>();
+builder.Services.AddScoped<GetConversationThreadHandler>();
+builder.Services.AddScoped<AdminSendMessageHandler>();
+builder.Services.AddScoped<GetTotalUnreadInboundHandler>();
 
 // Square
 builder.Services.AddHttpClient("square");
