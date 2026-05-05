@@ -49,6 +49,13 @@ public record AddToBasketRequest(
 // Created at checkout. Address is snapshotted from cust.CustomerAddress
 // at submission time — editing the saved address later doesn't mutate
 // historical orders.
+//
+// Items is intentionally NOT a constructor parameter. Dapper materializes
+// records via positional ctor matching, and the cust.[Order] table doesn't
+// (and can't) carry an Items column. The repository (GetCustomerOrdersAsync,
+// HydrateOrderAsync) populates Items via a second query against cust.OrderItem
+// and attaches it via `o with { Items = ... }`. Default value of an empty
+// list lets callers that don't hydrate items access .Items without NRE.
 
 public record OrderDto(
     int       OrderId,
@@ -70,10 +77,11 @@ public record OrderDto(
     string?   CustomerNotes,
     DateTime  CreatedAt,
     DateTime? PaidAt,
-    DateTime? CancelledAt,
-
-    List<OrderItemDto> Items
-);
+    DateTime? CancelledAt
+)
+{
+    public List<OrderItemDto> Items { get; init; } = new();
+}
 
 public record OrderItemDto(
     int     OrderItemId,

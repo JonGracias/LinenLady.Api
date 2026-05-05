@@ -271,25 +271,45 @@ public partial class CustomerRepository
     {
         using var db = Connect();
 
-        // Two-query approach: orders, then items in one batch grouped by
-        // OrderId. Cleaner than a single denormalized SELECT for Dapper to
-        // materialize, and the result sets are small (one customer's history).
+        // 1. Fetch the order rows. 17 columns, in constructor order.
+        //    SquarePaymentLinkId on the table is intentionally not selected —
+        //    OrderDto only exposes the URL.
         var orders = (await db.QueryAsync<OrderDto>(
-            OrderSelect + " WHERE o.CustomerId = @CustomerId ORDER BY o.CreatedAt DESC",
-            new { CustomerId = customerId })).ToList();
+            """
+            SELECT OrderId, CustomerId, Status, AmountCents,
+                SquarePaymentLinkUrl, SquareOrderId,
+                ShipLabel, ShipStreet1, ShipStreet2, ShipCity, ShipState, ShipZip, ShipCountry,
+                CustomerNotes, CreatedAt, PaidAt, CancelledAt
+            FROM cust.[Order]
+            WHERE CustomerId = @customerId
+            ORDER BY CreatedAt DESC
+            """,
+            new { customerId })).ToList();
 
         if (orders.Count == 0) return orders;
 
+        // 2. Fetch items for those orders in one round-trip.
+        //    Dapper expands @orderIds into (?, ?, ?...) for an IN clause.
         var orderIds = orders.Select(o => o.OrderId).ToArray();
+
         var items = (await db.QueryAsync<OrderItemDto>(
-            OrderItemSelect + " WHERE oi.OrderId IN @OrderIds",
-            new { OrderIds = orderIds })).ToList();
+            """
+            SELECT OrderItemId, OrderId, ReservationId, InventoryId,
+                ItemName, ItemSku, UnitPriceCents, ItemPublicId, ThumbnailUrl
+            FROM cust.OrderItem
+            WHERE OrderId IN @orderIds
+            ORDER BY OrderId, OrderItemId
+            """,
+            new { orderIds })).ToList();
 
-        var byOrder = items.GroupBy(i => i.OrderId).ToDictionary(g => g.Key, g => g.ToList());
+        // 3. Group items by OrderId and attach. `with` works on records;
+        //    the resulting list preserves the CreatedAt DESC ordering from
+        //    the orders query.
+        var byOrderId = items.GroupBy(i => i.OrderId)
+                            .ToDictionary(g => g.Key, g => g.ToList());
 
-        // Records are immutable — rebuild each Order with its items.
         return orders
-            .Select(o => o with { Items = byOrder.GetValueOrDefault(o.OrderId, new()) })
+            .Select(o => o with { Items = byOrderId.GetValueOrDefault(o.OrderId, new List<OrderItemDto>()) })
             .ToList();
     }
 

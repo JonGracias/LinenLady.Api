@@ -69,17 +69,6 @@ public record SetPreferencesRequest(
     List<string> Categories
 );
 
-// ── Reservation ───────────────────────────────────────────────
-
-public record CreateReservationRequest(
-    int     InventoryId,
-    string? CustomerNotes
-);
-
-public record CancelReservationRequest(
-    string? Reason
-);
-
 // ── Admin: Conversations ──────────────────────────────────────
 //
 // A "conversation" is one row per customer in the admin inbox view —

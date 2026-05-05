@@ -25,6 +25,7 @@
 -- ============================================================================
 
 SET XACT_ABORT ON;
+SET QUOTED_IDENTIFIER ON;
 BEGIN TRANSACTION;
 
 -- ── 1. cust.Order ───────────────────────────────────────────────────────────
@@ -202,8 +203,20 @@ BEGIN
     ALTER TABLE cust.Message
         ADD OrderId INT NULL
             CONSTRAINT FK_Message_Order REFERENCES cust.[Order](OrderId);
-
-    CREATE INDEX IX_Message_Order ON cust.Message (OrderId) WHERE OrderId IS NOT NULL;
 END;
 
 COMMIT TRANSACTION;
+GO
+
+-- The index creation lives in its own batch (after the GO above) so the
+-- parser sees the new OrderId column. Wrapped in IF NOT EXISTS for
+-- idempotency.
+SET QUOTED_IDENTIFIER ON;
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE  name      = 'IX_Message_Order'
+      AND  object_id = OBJECT_ID('cust.Message')
+)
+BEGIN
+    CREATE INDEX IX_Message_Order ON cust.Message (OrderId) WHERE OrderId IS NOT NULL;
+END;

@@ -18,21 +18,26 @@ public partial interface ICustomerRepository
     Task<List<CustomerPreferenceDto>> GetPreferencesAsync(int customerId);
     Task                              SetPreferencesAsync(int customerId, List<string> categories);
 
-    Task<ReservationDto?>          GetReservationAsync(int reservationId);
-    Task<List<ReservationDto>>     GetCustomerReservationsAsync(int customerId);
-    Task<bool>                     IsItemReservedAsync(int inventoryId);
     /// <summary>
-    /// Returns the currently-active reservation for a given item, if any —
-    /// active = Pending/Confirmed/PaymentSent and not yet expired. Used by
-    /// the reserve handler to distinguish "you've already reserved this"
-    /// from "someone else has it" so the frontend can route accordingly
-    /// (your reservation list vs. an error toast).
+    /// Returns the currently-active reservation for an item, if any. "Active"
+    /// here means Status='Active' and not yet expired. Used by AddToBasketHandler
+    /// to distinguish "you already have it" from "someone else has it" so the
+    /// frontend can route accordingly.
     /// </summary>
     Task<ReservationDto?>          GetActiveReservationForItemAsync(int inventoryId);
-    Task<int?>                     GetAvailableItemPriceCentsAsync(int inventoryId); // NEW
-    Task<ReservationDto>           CreateReservationAsync(int customerId, CreateReservationRequest req, int amountCents);
-    Task<ReservationDto?>          UpdateReservationStatusAsync(int reservationId, string status);
-    Task<ReservationDto?>          SetPaymentLinkAsync(int reservationId, SquarePaymentLinkResult link);
+
+    /// <summary>
+    /// Per-item price lookup gated on inventory availability. Kept available
+    /// for admin tooling though the basket flow's CheckoutAsync derives price
+    /// inline via JOIN — there's no live caller in the customer path.
+    /// </summary>
+    Task<int?>                     GetAvailableItemPriceCentsAsync(int inventoryId);
+
+    /// <summary>
+    /// Sweeper called by ExpireReservationsBackgroundService — flips Active
+    /// rows past their ExpiresAt to Expired. This is what enforces the 2-day
+    /// basket-hold window.
+    /// </summary>
     Task<int>                      ExpireReservationsAsync();
 
     Task<List<MessageDto>>  GetMessagesAsync(int customerId, int? reservationId = null);
@@ -254,53 +259,12 @@ public partial class CustomerRepository : ICustomerRepository
     }
 
     // ── Reservation ───────────────────────────────────────────
-
-    private const string ReservationSelect = """
-        SELECT
-            r.ReservationId, r.CustomerId, r.InventoryId, r.Status,
-            r.ReservedAt, r.ExpiresAt, r.PaymentSentAt, r.CompletedAt,
-            r.CustomerNotes, r.SquarePaymentLinkUrl, r.AmountCents,
-            i.Name      AS ItemName,
-            i.Sku       AS ItemSku,
-            i.PublicId  AS ItemPublicId,
-            CAST(NULL AS NVARCHAR(2048)) AS ThumbnailUrl
-        FROM cust.Reservation r
-        JOIN inv.Inventory    i ON i.InventoryId = r.InventoryId
-        """;
-
-    public async Task<ReservationDto?> GetReservationAsync(int reservationId)
-    {
-        using var db = Connect();
-        return await db.QueryFirstOrDefaultAsync<ReservationDto>(
-            ReservationSelect + " WHERE r.ReservationId = @ReservationId",
-            new { ReservationId = reservationId });
-    }
-
-    public async Task<List<ReservationDto>> GetCustomerReservationsAsync(int customerId)
-    {
-        using var db = Connect();
-        var rows = await db.QueryAsync<ReservationDto>(
-            ReservationSelect + """
-             WHERE r.CustomerId = @CustomerId
-             ORDER BY r.ReservedAt DESC
-            """,
-            new { CustomerId = customerId });
-        return rows.ToList();
-    }
-
-    public async Task<bool> IsItemReservedAsync(int inventoryId)
-    {
-        using var db = Connect();
-        var count = await db.ExecuteScalarAsync<int>(
-            """
-            SELECT COUNT(1) FROM cust.Reservation
-            WHERE InventoryId = @InventoryId
-              AND Status IN ('Pending','Confirmed','PaymentSent')
-              AND ExpiresAt > SYSUTCDATETIME()
-            """,
-            new { InventoryId = inventoryId });
-        return count > 0;
-    }
+    //
+    // The basket-flow reservation methods (GetBasketAsync, CreateBasketItemAsync,
+    // RemoveBasketItemAsync, ReAddBasketItemAsync) live in CustomerRepository.basket.cs.
+    // The three methods below are the legacy ones still wired into running
+    // code paths — rewritten here to project the new ReservationDto and
+    // filter on the new 'Active'/'Expired' status set.
 
     public async Task<ReservationDto?> GetActiveReservationForItemAsync(int inventoryId)
     {
@@ -308,19 +272,19 @@ public partial class CustomerRepository : ICustomerRepository
         return await db.QueryFirstOrDefaultAsync<ReservationDto>(
             """
             SELECT TOP 1
-                r.ReservationId, r.CustomerId, r.InventoryId,
-                r.Status, r.ReservedAt, r.ExpiresAt,
-                r.PaymentSentAt, r.CompletedAt, r.CustomerNotes,
-                r.SquarePaymentLinkUrl, r.AmountCents,
-                i.Name      AS ItemName,
-                i.Sku       AS ItemSku,
-                i.PublicId  AS ItemPublicId,
-                CAST(NULL AS NVARCHAR(2048)) AS ThumbnailUrl
+                r.ReservationId, r.CustomerId, r.InventoryId, r.Status,
+                r.ReservedAt, r.ExpiresAt, r.CustomerNotes,
+                i.Name           AS ItemName,
+                i.Sku            AS ItemSku,
+                i.PublicId       AS ItemPublicId,
+                CAST(NULL AS NVARCHAR(2048)) AS ThumbnailUrl,
+                i.UnitPriceCents,
+                CAST(0 AS BIT)   AS CanReAdd
             FROM   cust.Reservation r
             JOIN   inv.Inventory    i ON i.InventoryId = r.InventoryId
             WHERE  r.InventoryId = @InventoryId
-              AND  r.Status IN ('Pending','Confirmed','PaymentSent')
-              AND  r.ExpiresAt > SYSUTCDATETIME()
+              AND  r.Status      = 'Active'
+              AND  r.ExpiresAt   > SYSUTCDATETIME()
             ORDER BY r.ReservedAt DESC
             """,
             new { InventoryId = inventoryId });
@@ -332,116 +296,10 @@ public partial class CustomerRepository : ICustomerRepository
         return await db.ExecuteScalarAsync<int?>(
             """
             SELECT UnitPriceCents FROM inv.Inventory
-            WHERE InventoryId = @Id AND IsActive = 1 AND IsDeleted = 0
+            WHERE InventoryId = @Id
+              AND IsActive = 1 AND IsDraft = 0 AND IsDeleted = 0
             """,
             new { Id = inventoryId });
-    }
-
-    public async Task<ReservationDto> CreateReservationAsync(
-        int customerId, CreateReservationRequest req, int amountCents)
-    {
-        using var db = Connect();
-        // OUTPUT into a table var so we can join inv.Inventory afterward.
-        // OUTPUT clauses can only project from inserted/deleted, not joined
-        // rows, so the typed-NULL hack used to produce a row-shape that
-        // Dapper could materialize but the response never carried the actual
-        // item name/sku/thumbnail. Customers saw `itemName: null` in their
-        // reservation list. This pattern fixes that with one extra SELECT.
-        return await db.QueryFirstAsync<ReservationDto>(
-            """
-            DECLARE @Created TABLE (ReservationId INT);
-
-            INSERT INTO cust.Reservation
-                (CustomerId, InventoryId, Status, ExpiresAt, CustomerNotes, AmountCents)
-            OUTPUT inserted.ReservationId INTO @Created
-            VALUES
-                (@CustomerId, @InventoryId, 'Pending',
-                 DATEADD(HOUR, 48, SYSUTCDATETIME()),
-                 @CustomerNotes, @AmountCents);
-
-            SELECT
-                r.ReservationId, r.CustomerId, r.InventoryId,
-                r.Status, r.ReservedAt, r.ExpiresAt,
-                r.PaymentSentAt, r.CompletedAt, r.CustomerNotes,
-                r.SquarePaymentLinkUrl, r.AmountCents,
-                i.Name      AS ItemName,
-                i.Sku       AS ItemSku,
-                i.PublicId  AS ItemPublicId,
-                CAST(NULL AS NVARCHAR(2048)) AS ThumbnailUrl
-            FROM   cust.Reservation r
-            JOIN   inv.Inventory    i ON i.InventoryId = r.InventoryId
-            WHERE  r.ReservationId = (SELECT TOP 1 ReservationId FROM @Created);
-            """,
-            new { CustomerId = customerId, req.InventoryId,
-                  req.CustomerNotes, AmountCents = amountCents });
-    }
-
-    public async Task<ReservationDto?> UpdateReservationStatusAsync(
-        int reservationId, string status)
-    {
-        using var db = Connect();
-        var setClause = status switch
-        {
-            "Completed"   => ", CompletedAt   = SYSUTCDATETIME()",
-            "PaymentSent" => ", PaymentSentAt = SYSUTCDATETIME()",
-            "Cancelled"   => ", CancelledAt   = SYSUTCDATETIME()",
-            _             => ""
-        };
-
-        return await db.QueryFirstOrDefaultAsync<ReservationDto>(
-            $"""
-            UPDATE cust.Reservation
-            SET Status    = @Status,
-                UpdatedAt = SYSUTCDATETIME()
-                {setClause}
-            WHERE ReservationId = @ReservationId;
-
-            SELECT
-                r.ReservationId, r.CustomerId, r.InventoryId,
-                r.Status, r.ReservedAt, r.ExpiresAt,
-                r.PaymentSentAt, r.CompletedAt, r.CustomerNotes,
-                r.SquarePaymentLinkUrl, r.AmountCents,
-                i.Name      AS ItemName,
-                i.Sku       AS ItemSku,
-                i.PublicId  AS ItemPublicId,
-                CAST(NULL AS NVARCHAR(2048)) AS ThumbnailUrl
-            FROM   cust.Reservation r
-            JOIN   inv.Inventory    i ON i.InventoryId = r.InventoryId
-            WHERE  r.ReservationId = @ReservationId;
-            """,
-            new { ReservationId = reservationId, Status = status });
-    }
-
-    public async Task<ReservationDto?> SetPaymentLinkAsync(
-        int reservationId, SquarePaymentLinkResult link)
-    {
-        using var db = Connect();
-        return await db.QueryFirstOrDefaultAsync<ReservationDto>(
-            """
-            UPDATE cust.Reservation
-            SET SquarePaymentLinkId  = @PaymentLinkId,
-                SquarePaymentLinkUrl = @Url,
-                SquareOrderId        = @OrderId,
-                Status               = 'PaymentSent',
-                PaymentSentAt        = SYSUTCDATETIME(),
-                UpdatedAt            = SYSUTCDATETIME()
-            WHERE ReservationId = @ReservationId;
-
-            SELECT
-                r.ReservationId, r.CustomerId, r.InventoryId,
-                r.Status, r.ReservedAt, r.ExpiresAt,
-                r.PaymentSentAt, r.CompletedAt, r.CustomerNotes,
-                r.SquarePaymentLinkUrl, r.AmountCents,
-                i.Name      AS ItemName,
-                i.Sku       AS ItemSku,
-                i.PublicId  AS ItemPublicId,
-                CAST(NULL AS NVARCHAR(2048)) AS ThumbnailUrl
-            FROM   cust.Reservation r
-            JOIN   inv.Inventory    i ON i.InventoryId = r.InventoryId
-            WHERE  r.ReservationId = @ReservationId;
-            """,
-            new { ReservationId = reservationId,
-                  link.PaymentLinkId, link.Url, link.OrderId });
     }
 
     public async Task<int> ExpireReservationsAsync()
@@ -452,7 +310,7 @@ public partial class CustomerRepository : ICustomerRepository
             UPDATE cust.Reservation
             SET Status    = 'Expired',
                 UpdatedAt = SYSUTCDATETIME()
-            WHERE Status  IN ('Pending','Confirmed')
+            WHERE Status    = 'Active'
               AND ExpiresAt < SYSUTCDATETIME()
             """);
     }
@@ -465,13 +323,15 @@ public partial class CustomerRepository : ICustomerRepository
         using var db = Connect();
         var sql = reservationId.HasValue
             ? """
-              SELECT MessageId, CustomerId, ReservationId, Direction, Body, IsRead, SentAt
+              SELECT MessageId, CustomerId, ReservationId, OrderId,
+                     Direction, Body, IsRead, SentAt
               FROM cust.Message
               WHERE CustomerId = @CustomerId AND ReservationId = @ReservationId
               ORDER BY SentAt ASC
               """
             : """
-              SELECT MessageId, CustomerId, ReservationId, Direction, Body, IsRead, SentAt
+              SELECT MessageId, CustomerId, ReservationId, OrderId,
+                     Direction, Body, IsRead, SentAt
               FROM cust.Message
               WHERE CustomerId = @CustomerId
               ORDER BY SentAt ASC
@@ -488,12 +348,15 @@ public partial class CustomerRepository : ICustomerRepository
         using var db = Connect();
         return await db.QueryFirstAsync<MessageDto>(
             """
-            INSERT INTO cust.Message (CustomerId, ReservationId, Direction, Body)
-            OUTPUT inserted.MessageId, inserted.CustomerId, inserted.ReservationId,
-                   inserted.Direction, inserted.Body, inserted.IsRead, inserted.SentAt
-            VALUES (@CustomerId, @ReservationId, @Direction, @Body)
+            INSERT INTO cust.Message (CustomerId, ReservationId, OrderId, Direction, Body)
+            OUTPUT inserted.MessageId,    inserted.CustomerId,
+                   inserted.ReservationId, inserted.OrderId,
+                   inserted.Direction,    inserted.Body,
+                   inserted.IsRead,       inserted.SentAt
+            VALUES (@CustomerId, @ReservationId, @OrderId, @Direction, @Body)
             """,
-            new { CustomerId = customerId, req.ReservationId,
+            new { CustomerId = customerId,
+                  req.ReservationId, req.OrderId,
                   Direction = direction, req.Body });
     }
 

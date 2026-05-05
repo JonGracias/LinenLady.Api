@@ -2,7 +2,6 @@ namespace LinenLady.API.Customers.Handler;
 
 using LinenLady.API.Contracts;
 using LinenLady.API.Customers.Sql;
-using LinenLady.API.Square;
 
 // ── Exceptions ───────────────────────────────────────────────
 
@@ -73,6 +72,12 @@ public sealed class GetMyProfileHandler
     private readonly ICustomerRepository _repo;
     public GetMyProfileHandler(ICustomerRepository repo) => _repo = repo;
 
+    /// <summary>
+    /// Returns the customer's profile: identity, addresses, preferences.
+    /// Reservations are NOT included — the frontend loads basket data from
+    /// /api/customers/me/basket instead, which projects the new ReservationDto
+    /// shape (Active/Expired statuses + canReAdd flag).
+    /// </summary>
     public async Task<MyProfileResult> HandleAsync(string clerkUserId, CancellationToken ct)
     {
         var customer = await _repo.GetByClerkIdAsync(clerkUserId)
@@ -80,17 +85,15 @@ public sealed class GetMyProfileHandler
 
         var addresses    = await _repo.GetAddressesAsync(customer.CustomerId);
         var preferences  = await _repo.GetPreferencesAsync(customer.CustomerId);
-        var reservations = await _repo.GetCustomerReservationsAsync(customer.CustomerId);
 
-        return new MyProfileResult(customer, addresses, preferences, reservations);
+        return new MyProfileResult(customer, addresses, preferences);
     }
 }
 
 public record MyProfileResult(
     CustomerDto                  Customer,
     List<CustomerAddressDto>     Addresses,
-    List<CustomerPreferenceDto>  Preferences,
-    List<ReservationDto>         Reservations
+    List<CustomerPreferenceDto>  Preferences
 );
 
 // ─────────────────────────────────────────────────────────────
@@ -164,168 +167,6 @@ public sealed class SetPreferencesHandler
 
         await _repo.SetPreferencesAsync(customer.CustomerId, req.Categories);
         return await _repo.GetPreferencesAsync(customer.CustomerId);
-    }
-}
-
-// ─────────────────────────────────────────────────────────────
-
-public sealed class CreateReservationHandler
-{
-    private readonly ICustomerRepository _repo;
-    private readonly ISquareService _square;
-    private readonly ILogger<CreateReservationHandler> _log;
-
-    public CreateReservationHandler(
-        ICustomerRepository repo,
-        ISquareService square,
-        ILogger<CreateReservationHandler> log)
-    {
-        _repo = repo;
-        _square = square;
-        _log = log;
-    }
-
-    public async Task<ReservationDto> HandleAsync(
-        string clerkUserId, CreateReservationRequest req, CancellationToken ct)
-    {
-        var customer = await _repo.GetByClerkIdAsync(clerkUserId)
-            ?? throw new CustomerNotFoundException("Profile not found.");
-
-        if (!customer.IsEmailVerified)
-            throw new EmailNotVerifiedException(
-                "Email verification required before reserving an item.");
-
-        // Distinguish "you already reserved this" from "someone else has it"
-        // so the frontend can route accordingly. The product-level decision:
-        // re-clicking Reserve on a piece you already hold should silently
-        // forward to your reservations list, not show a confusing error.
-        var existing = await _repo.GetActiveReservationForItemAsync(req.InventoryId);
-        if (existing is not null)
-        {
-            if (existing.CustomerId == customer.CustomerId)
-                throw new ItemAlreadyReservedByYouException(
-                    existing.ReservationId,
-                    "You already have an active reservation for this piece.");
-
-            throw new ItemAlreadyReservedException(
-                "This item is currently reserved by another customer.");
-        }
-
-        // Repo-backed price lookup — replaces the old env-var SQL call
-        var amountCents = await _repo.GetAvailableItemPriceCentsAsync(req.InventoryId)
-            ?? throw new ItemNotFoundException($"Item {req.InventoryId} not found or unavailable.");
-
-        var reservation = await _repo.CreateReservationAsync(customer.CustomerId, req, amountCents);
-        
-        // Pre-populate Square's address form with the customer's default address.
-        // Falls back to a no-address payment link if they haven't saved one — they
-        // can still enter it on Square's checkout page.
-        CustomerAddressDto? defaultAddress = null;
-        try
-        {
-            var addresses = await _repo.GetAddressesAsync(customer.CustomerId);
-            defaultAddress = addresses.FirstOrDefault(a => a.IsDefault)
-                        ?? addresses.FirstOrDefault();
-        }
-        catch (Exception ex)
-        {
-            _log.LogWarning(ex,
-                "Address lookup failed for customer {Id} (non-fatal).",
-                customer.CustomerId);
-        }
-
-        // Square payment link — non-fatal on failure
-        try
-        {
-            var link = await _square.CreatePaymentLinkAsync(
-                reservationId: reservation.ReservationId,
-                itemName:      reservation.ItemName ?? "Noemi The Linen Lady Item",
-                itemSku:       reservation.ItemSku  ?? "",
-                amountCents:   amountCents,
-                customerEmail: customer.Email,
-                customerName:  $"{customer.FirstName} {customer.LastName}".Trim(),
-                shippingAddress:  defaultAddress
-            );
-
-            reservation = await _repo.SetPaymentLinkAsync(reservation.ReservationId, link) ?? reservation;
-
-            await _repo.LogNotificationAsync(
-                customer.CustomerId, reservation.ReservationId, "PaymentLinkSent", true);
-        }
-        catch (Exception ex)
-        {
-            _log.LogError(ex,
-                "Square payment link generation failed for reservation {Id} (non-fatal).",
-                reservation.ReservationId);
-            await _repo.LogNotificationAsync(
-                customer.CustomerId, reservation.ReservationId,
-                "PaymentLinkSent", false, ex.Message);
-        }
-
-        await _repo.LogNotificationAsync(
-            customer.CustomerId, reservation.ReservationId, "ReservationConfirmed", true);
-
-        // Indeed-style: every reservation also lands as an inbound message in
-        // the customer<->admin thread, so Noemi sees it in the same inbox where
-        // she replies to general inquiries. Failure here is non-fatal — the
-        // reservation itself is the source of truth; the message is a
-        // convenience surface.
-        try
-        {
-            var notes = string.IsNullOrWhiteSpace(req.CustomerNotes)
-                ? null
-                : $"\n\nNotes: {req.CustomerNotes!.Trim()}";
-
-            var body =
-                $"Reserved: {reservation.ItemName ?? "Linen Lady item"}"
-              + (string.IsNullOrWhiteSpace(reservation.ItemSku) ? "" : $" (SKU {reservation.ItemSku})")
-              + $".{notes}";
-
-            await _repo.SendMessageAsync(
-                customer.CustomerId,
-                new SendMessageRequest(body, reservation.ReservationId, OrderId: null),
-                direction: "Inbound");
-        }
-        catch (Exception ex)
-        {
-            _log.LogWarning(ex,
-                "Auto-message for reservation {Id} failed (non-fatal).",
-                reservation.ReservationId);
-        }
-
-        _log.LogInformation(
-            "Reservation {Id} created for customer {CustomerId}, item {InventoryId}.",
-            reservation.ReservationId, customer.CustomerId, req.InventoryId);
-
-        return reservation;
-    }
-}
-
-// ─────────────────────────────────────────────────────────────
-
-public sealed class CancelReservationHandler
-{
-    private readonly ICustomerRepository _repo;
-    public CancelReservationHandler(ICustomerRepository repo) => _repo = repo;
-
-    public async Task<ReservationDto> HandleAsync(
-        string clerkUserId, int reservationId, CancellationToken ct)
-    {
-        var customer = await _repo.GetByClerkIdAsync(clerkUserId)
-            ?? throw new CustomerNotFoundException("Profile not found.");
-
-        var reservation = await _repo.GetReservationAsync(reservationId)
-            ?? throw new ReservationNotFoundException("Reservation not found.");
-
-        if (reservation.CustomerId != customer.CustomerId)
-            throw new ReservationNotFoundException("Reservation not found.");
-
-        if (reservation.Status is "Completed" or "Expired")
-            throw new ReservationConflictException(
-                $"A {reservation.Status} reservation cannot be cancelled.");
-
-        return await _repo.UpdateReservationStatusAsync(reservationId, "Cancelled")
-            ?? throw new ReservationNotFoundException("Update failed.");
     }
 }
 
