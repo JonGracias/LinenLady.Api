@@ -164,10 +164,10 @@ public partial class CustomerRepository
             DECLARE @Created TABLE (ReservationId INT);
 
             INSERT INTO cust.Reservation
-                (CustomerId, InventoryId, Status, ExpiresAt, CustomerNotes)
+                (CustomerId, InventoryId, Status, ExpiresAt, CustomerNotes, AmountCents)
             OUTPUT inserted.ReservationId INTO @Created
             SELECT @CustomerId, @InventoryId, 'Active',
-                   DATEADD(DAY, 2, SYSUTCDATETIME()), @CustomerNotes
+                   DATEADD(DAY, 2, SYSUTCDATETIME()), @CustomerNotes, i.UnitPriceCents
             FROM   inv.Inventory i
             WHERE  i.InventoryId = @InventoryId
               AND  i.IsActive = 1 AND i.IsDraft = 0 AND i.IsDeleted = 0
@@ -293,13 +293,7 @@ public partial class CustomerRepository
         var orderIds = orders.Select(o => o.OrderId).ToArray();
 
         var items = (await db.QueryAsync<OrderItemDto>(
-            """
-            SELECT OrderItemId, OrderId, ReservationId, InventoryId,
-                ItemName, ItemSku, UnitPriceCents, ItemPublicId, ThumbnailUrl
-            FROM cust.OrderItem
-            WHERE OrderId IN @orderIds
-            ORDER BY OrderId, OrderItemId
-            """,
+            OrderItemSelect + " WHERE oi.OrderId IN @orderIds ORDER BY oi.OrderId, oi.OrderItemId",
             new { orderIds })).ToList();
 
         // 3. Group items by OrderId and attach. `with` works on records;

@@ -26,6 +26,11 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.Tokens;
 using LinenLady.API.Contracts;
 using LinenLady.API.Customers.Services;
+using LinenLady.Api.Features.Contact;
+using LinenLady.Api.Features.Contact.Email;
+using LinenLady.Api.Features.Contact.Service;
+using LinenLady.Api.Features.Contact.Sql;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -50,6 +55,25 @@ builder.Services.Configure<SquareOptions>(
     builder.Configuration.GetSection(SquareOptions.SectionName));
 builder.Services.Configure<ClerkAuthOptions>(
     builder.Configuration.GetSection(ClerkAuthOptions.SectionName));
+builder.Services
+    .AddOptions<ContactOptions>()
+    .Bind(builder.Configuration.GetSection(ContactOptions.SectionName))
+    .Validate(o => !string.IsNullOrWhiteSpace(o.RecipientEmail), "Contact:RecipientEmail is required")
+    .Validate(o => !string.IsNullOrWhiteSpace(o.SenderEmail),    "Contact:SenderEmail is required")
+    .Validate(o => !string.IsNullOrWhiteSpace(o.ResendApiKey),   "Contact:ResendApiKey is required")
+    .ValidateOnStart();
+
+// ── Resend HTTP client ─────────────────────────────────────────────────────
+// Single named client; the Authorization header is set per-instance from
+// IOptions so a config rotation takes effect without an app restart.
+builder.Services.AddHttpClient("resend", (sp, client) =>
+{
+    var opts = sp.GetRequiredService<IOptions<ContactOptions>>().Value;
+    client.BaseAddress = new Uri("https://api.resend.com/");
+    client.DefaultRequestHeaders.Authorization =
+        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", opts.ResendApiKey);
+    client.Timeout = TimeSpan.FromSeconds(10);
+});
 
 // ─── Authentication (Clerk JWT) ──────────────────────────────────────────────
 // Clerk's JWKS is discovered via OIDC metadata at {Authority}/.well-known/openid-configuration.
@@ -170,6 +194,11 @@ builder.Services.AddScoped<GetMyOrdersHandler>();
 builder.Services.AddScoped<GetOrderByIdHandler>();
 builder.Services.AddScoped<AskNoemiHandler>();
 builder.Services.AddScoped<ExpireStaleOrdersHandler>();
+
+// ── Customer Email services ───────────────────────────────────────────────────────
+builder.Services.AddScoped<IContactRepository, ContactRepository>();
+builder.Services.AddScoped<IEmailSender,       ResendEmailSender>();
+builder.Services.AddScoped<IContactService,    ContactService>();
 
 // Square
 builder.Services.AddHttpClient("square");
