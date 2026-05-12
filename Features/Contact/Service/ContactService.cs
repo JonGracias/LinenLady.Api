@@ -1,11 +1,11 @@
-namespace LinenLady.Api.Features.Contact.Service;
+namespace LinenLady.API.Features.Contact.Service;
 
 using System.Net;
 using System.Text;
-using LinenLady.Api.Features.Contact.Contracts;
-using LinenLady.Api.Features.Contact.Email;
-using LinenLady.Api.Features.Contact.Sql;
-using LinenLady.Api.Common.Errors;       // assumed: DomainException already exists from prior migration
+using LinenLady.API.Features.Contact.Contracts;
+using LinenLady.API.Features.Contact.Email;
+using LinenLady.API.Features.Contact.Sql;
+using LinenLady.API.Filters;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -36,7 +36,6 @@ public sealed class ContactService(
         CancellationToken ct = default)
     {
         // 1. Honeypot — if present, look like success but drop silently.
-        //    Bots get a 200 and move on; humans never see this branch.
         if (!string.IsNullOrEmpty(req.Website))
         {
             _log.LogInformation("Honeypot tripped from {Ip}", ip);
@@ -52,7 +51,7 @@ public sealed class ContactService(
             : req.Subject!.Trim();
 
         if (body.Length == 0)
-            throw new DomainException("Message body is required.", HttpStatusCode.BadRequest);
+            throw new ContactValidationException("Message body is required.");
 
         // 3. Rate-limit. Fail closed with 429 — message never persists.
         await EnforceRateLimitsAsync(ip, fromEmail, ct);
@@ -78,21 +77,48 @@ public sealed class ContactService(
         }
         catch (EmailSendException ex)
         {
-            await _repo.MarkFailedAsync(submissionId, ex.Message, ct);
-            // Don't leak provider error text to the caller.
-            throw new DomainException(
-                "We couldn't send your message right now. Please try again in a few minutes.",
-                HttpStatusCode.BadGateway);
-        }
-
-        // 6. Optionally send the visitor a confirmation. Best-effort — failures are logged, not surfaced.
-        if (_opts.SendVisitorConfirmation)
-        {
+            // Audit-log the failure on a FRESH cancellation token. The original
+            // request token may already be cancelled (slow client, timeout, the
+            // 502 response we're about to send), but we still want this row in
+            // the database so we can see provider outages later. 5-second budget
+            // is generous — enough to survive a slow connection without holding
+            // up the response any longer than necessary.
+            //
+            // The defensive try/catch around it is critical: if MarkFailedAsync
+            // itself throws (Dapper TaskCanceledException, SQL transient, etc.),
+            // we must NOT let that exception escape. The user-facing
+            // ContactProviderException below carries the message that maps to
+            // the friendly 502 banner; if we let an audit-log failure bubble up,
+            // it gets to the controller as an unhandled exception and the user
+            // sees a generic 500 instead.
+            using var auditCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             try
             {
-                await _email.SendAsync(BuildVisitorConfirmation(fromName, fromEmail, subject), ct);
+                await _repo.MarkFailedAsync(submissionId, ex.Message, auditCts.Token);
             }
-            catch (EmailSendException ex)
+            catch (Exception logEx)
+            {
+                _log.LogError(logEx,
+                    "Failed to mark submission {Id} as Failed (provider error was: {ProviderError})",
+                    submissionId, ex.Message);
+            }
+
+            // Don't leak provider error text to the caller.
+            throw new ContactProviderException(
+                "We couldn't send your message right now. Please try again in a few minutes.");
+        }
+
+        // 6. Optionally send the visitor a confirmation. Best-effort — failures
+        //    are logged, not surfaced. Same fresh-token treatment in case the
+        //    request is winding down.
+        if (_opts.SendVisitorConfirmation)
+        {
+            using var confirmCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            try
+            {
+                await _email.SendAsync(BuildVisitorConfirmation(fromName, fromEmail, subject), confirmCts.Token);
+            }
+            catch (Exception ex)
             {
                 _log.LogWarning(ex, "Visitor confirmation failed for submission {Id}", submissionId);
             }
@@ -111,18 +137,16 @@ public sealed class ContactService(
         {
             var ipCount = await _repo.CountByIpSinceAsync(ip, now.AddHours(-1), ct);
             if (ipCount >= _opts.MaxPerIpPerHour)
-                throw new DomainException(
-                    "Too many messages from your network. Please try again later.",
-                    HttpStatusCode.TooManyRequests);
+                throw new ContactRateLimitedException(
+                    "Too many messages from your network. Please try again later.");
         }
 
         if (_opts.MaxPerEmailPerDay > 0)
         {
             var emCount = await _repo.CountByEmailSinceAsync(email, now.AddDays(-1), ct);
             if (emCount >= _opts.MaxPerEmailPerDay)
-                throw new DomainException(
-                    "You've reached today's message limit. Please try again tomorrow.",
-                    HttpStatusCode.TooManyRequests);
+                throw new ContactRateLimitedException(
+                    "You've reached today's message limit. Please try again tomorrow.");
         }
     }
 
@@ -134,9 +158,6 @@ public sealed class ContactService(
     private EmailMessage BuildOwnerEmail(
         string fromName, string fromEmail, string subject, string body, string? sku)
     {
-        // Critical: From is OUR domain (DKIM/SPF aligned). Reply-To is the visitor.
-        // Display name "{visitor} via {brand}" mirrors how forwarding services and
-        // mailing lists do it — it's the legitimate, trust-preserving shape.
         var senderDisplay = $"{fromName} via {_opts.SenderBrand}";
 
         var (html, text) = RenderOwnerBody(fromName, fromEmail, body, sku);

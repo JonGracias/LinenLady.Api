@@ -1,4 +1,4 @@
-namespace LinenLady.Api.Features.Contact.Contracts;
+namespace LinenLady.API.Features.Contact.Contracts;
 
 using System.ComponentModel.DataAnnotations;
 

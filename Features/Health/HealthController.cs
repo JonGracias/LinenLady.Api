@@ -1,4 +1,4 @@
-namespace LinenLady.Api.Controllers;
+namespace LinenLady.API.Controllers;
 
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;

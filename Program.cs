@@ -6,7 +6,7 @@ using LinenLady.API.AI.Prefill.Service;
 using LinenLady.API.AI.Rewrite.Service;
 using LinenLady.API.AI.Seo.Service;
 using LinenLady.API.Auth;
-using LinenLady.API.Api.Filters;
+using LinenLady.API.Filters;
 using LinenLady.API.BackgroundServices;
 using LinenLady.API.Blob.Options;
 using LinenLady.API.Customers.Sql;
@@ -26,11 +26,12 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.Tokens;
 using LinenLady.API.Contracts;
 using LinenLady.API.Customers.Services;
-using LinenLady.Api.Features.Contact;
-using LinenLady.Api.Features.Contact.Email;
-using LinenLady.Api.Features.Contact.Service;
-using LinenLady.Api.Features.Contact.Sql;
+using LinenLady.API.Features.Contact;
+using LinenLady.API.Features.Contact.Email;
+using LinenLady.API.Features.Contact.Service;
+using LinenLady.API.Features.Contact.Sql;
 using Microsoft.Extensions.Options;
+using LinenLady.API.Inventory.Availability.Handler;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -149,13 +150,14 @@ builder.Services.AddScoped<IAiEmbeddingsService, AiEmbeddingsService>();
 builder.Services.AddScoped<IAiKeywordsService, AiKeywordsService>();
 builder.Services.AddScoped<IAiSeoService, AiSeoService>();
 
-// ─── Inventory: items ────────────────────────────────────────────────────────
+// ─── Inventory: inventory ────────────────────────────────────────────────────────
 builder.Services.AddScoped<IInventoryRepository, InventoryRepository>();
 builder.Services.AddScoped<IInventoryAiMetaRepository, InventoryAiMetaRepository>();
 builder.Services.AddScoped<GetItemsHandler>();
 builder.Services.AddScoped<CreateItemsHandler>();
 builder.Services.AddScoped<UpdateItemHandler>();
 builder.Services.AddScoped<SoftDeleteItemHandler>();
+builder.Services.AddScoped<GetAvailabilityHandler>();
 
 // ─── Inventory: images ───────────────────────────────────────────────────────
 builder.Services.AddScoped<IInventoryImageRepository, InventoryImageRepository>();
@@ -195,7 +197,7 @@ builder.Services.AddScoped<GetOrderByIdHandler>();
 builder.Services.AddScoped<AskNoemiHandler>();
 builder.Services.AddScoped<ExpireStaleOrdersHandler>();
 
-// ── Customer Email services ───────────────────────────────────────────────────────
+// ── Customer Email services ─────────────────────────────────────────
 builder.Services.AddScoped<IContactRepository, ContactRepository>();
 builder.Services.AddScoped<IEmailSender,       ResendEmailSender>();
 builder.Services.AddScoped<IContactService,    ContactService>();

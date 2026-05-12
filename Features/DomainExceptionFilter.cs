@@ -1,6 +1,7 @@
-namespace LinenLady.API.Api.Filters;
+namespace LinenLady.API.Filters;
 
 using LinenLady.API.Customers.Handler;
+using LinenLady.API.Features.Contact;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 
@@ -10,6 +11,7 @@ using Microsoft.AspNetCore.Mvc.Filters;
 /// Program.cs. Covers customer/reservation domain exceptions plus the generic
 /// BCL exceptions that image and inventory handlers throw.
 /// </summary>
+
 public sealed class DomainExceptionFilter : IExceptionFilter
 {
     public void OnException(ExceptionContext context)
@@ -42,6 +44,11 @@ public sealed class DomainExceptionFilter : IExceptionFilter
             ReservationConflictException ex  => (409, ex.Message),
             ItemAlreadyReservedException ex  => (409, ex.Message),
             EmailNotVerifiedException ex     => (403, ex.Message),
+
+            // ── Contact feature ──
+            ContactValidationException ex    => (400, ex.Message),
+            ContactRateLimitedException ex   => (429, ex.Message),
+            ContactProviderException ex      => (502, ex.Message),
 
             // Generic — used by image/inventory handlers that predate the typed exceptions
             KeyNotFoundException ex          => (404, ex.Message),

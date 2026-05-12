@@ -1,7 +1,7 @@
-namespace LinenLady.Api.Features.Contact.Handler;
+namespace LinenLady.API.Features.Contact.Handler;
 
-using LinenLady.Api.Features.Contact.Contracts;
-using LinenLady.Api.Features.Contact.Service;
+using LinenLady.API.Features.Contact.Contracts;
+using LinenLady.API.Features.Contact.Service;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 

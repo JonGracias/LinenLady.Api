@@ -1,4 +1,4 @@
-namespace LinenLady.Api.Features.Contact.Email;
+namespace LinenLady.API.Features.Contact.Email;
 
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;

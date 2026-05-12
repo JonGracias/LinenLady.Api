@@ -155,10 +155,6 @@ public partial class CustomerRepository
     {
         using var db = Connect();
 
-        // Single round-trip: the INSERT is conditional on availability so
-        // we don't have a TOCTOU window between "is it available?" and
-        // "claim it." The race-loser gets a no-op; the handler layer
-        // surfaces the right 409 by re-querying.
         return await db.QueryFirstOrDefaultAsync<ReservationDto>(
             $"""
             DECLARE @Created TABLE (ReservationId INT);
@@ -167,19 +163,28 @@ public partial class CustomerRepository
                 (CustomerId, InventoryId, Status, ExpiresAt, CustomerNotes, AmountCents)
             OUTPUT inserted.ReservationId INTO @Created
             SELECT @CustomerId, @InventoryId, 'Active',
-                   DATEADD(DAY, 2, SYSUTCDATETIME()), @CustomerNotes, i.UnitPriceCents
+                DATEADD(DAY, 2, SYSUTCDATETIME()), @CustomerNotes, i.UnitPriceCents
             FROM   inv.Inventory i
             WHERE  i.InventoryId = @InventoryId
-              AND  i.IsActive = 1 AND i.IsDraft = 0 AND i.IsDeleted = 0
-              AND  NOT EXISTS (
-                       SELECT 1 FROM cust.Reservation r
-                       WHERE  r.InventoryId = i.InventoryId
-                         AND  r.Status      = 'Active'
-                         AND  r.ExpiresAt   > SYSUTCDATETIME()
-                   );
+            AND  i.IsActive = 1 AND i.IsDraft = 0 AND i.IsDeleted = 0
+            AND  NOT EXISTS (
+                    SELECT 1 FROM cust.Reservation r
+                    WHERE  r.InventoryId = i.InventoryId
+                        AND  r.Status      = 'Active'
+                        AND  r.ExpiresAt   > SYSUTCDATETIME()
+                )
+            AND  NOT EXISTS (
+                    -- NEW: block if a PaymentPending order already claims this item.
+                    -- Closes the gap between checkout (reservation→Expired) and
+                    -- payment completion (inv.Inventory.IsActive→0).
+                    SELECT 1 FROM cust.OrderItem oi
+                    JOIN   cust.[Order]    o ON o.OrderId = oi.OrderId
+                    WHERE  oi.InventoryId = i.InventoryId
+                        AND  o.Status       = 'PaymentPending'
+                );
 
             IF NOT EXISTS (SELECT 1 FROM @Created)
-                SELECT TOP 0 NULL;  -- handler maps null → NotFound or Conflict
+                SELECT TOP 0 NULL;
             ELSE
                 {BasketSelect}
                 WHERE r.ReservationId = (SELECT TOP 1 ReservationId FROM @Created);
@@ -551,20 +556,20 @@ public partial class CustomerRepository
             var recreated = await conn.ExecuteAsync(
                 """
                 INSERT INTO cust.Reservation
-                    (CustomerId, InventoryId, Status, ExpiresAt, CustomerNotes)
+                    (CustomerId, InventoryId, Status, ExpiresAt, CustomerNotes, AmountCents)
                 SELECT o.CustomerId, oi.InventoryId, 'Active',
-                       DATEADD(DAY, 2, SYSUTCDATETIME()), NULL
+                       DATEADD(DAY, 2, SYSUTCDATETIME()), NULL, oi.UnitPriceCents
                 FROM   cust.OrderItem  oi
                 JOIN   cust.[Order]    o  ON o.OrderId = oi.OrderId
                 JOIN   inv.Inventory   i  ON i.InventoryId = oi.InventoryId
                 WHERE  oi.OrderId = @OrderId
-                  AND  i.IsActive = 1 AND i.IsDraft = 0 AND i.IsDeleted = 0
-                  AND  NOT EXISTS (
-                           SELECT 1 FROM cust.Reservation r
-                           WHERE  r.InventoryId = oi.InventoryId
-                             AND  r.Status      = 'Active'
-                             AND  r.ExpiresAt   > SYSUTCDATETIME()
-                       );
+                    AND  i.IsActive = 1 AND i.IsDraft = 0 AND i.IsDeleted = 0
+                    AND  NOT EXISTS (
+                        SELECT 1 FROM cust.OrderItem oi2
+                        JOIN   cust.[Order]    o2 ON o2.OrderId = oi2.OrderId
+                        WHERE  oi2.InventoryId = oi.InventoryId
+                        AND  o2.Status       = 'PaymentPending'
+                    )
                 """,
                 new { OrderId = orderId }, tx);
 

@@ -1,4 +1,4 @@
-namespace LinenLady.Api.Features.Contact;
+namespace LinenLady.API.Features.Contact;
 
 /// <summary>
 /// Bound from the "Contact" config section.
@@ -15,7 +15,7 @@ public sealed class ContactOptions
     public string RecipientName { get; set; } = "Noemi";
 
     /// <summary>From-address on outbound mail. Must be on a domain you've verified with Resend (DKIM/SPF). e.g. "noreply@linenlady.net".</summary>
-    public string SenderEmail { get; set; } = "";
+    public string SenderEmail { get; set; } = "jon.gracias@gmail.com";
 
     /// <summary>From-display name. Final header reads as: "{visitor} via LinenLady &lt;noreply@linenlady.net&gt;".</summary>
     public string SenderBrand { get; set; } = "LinenLady";

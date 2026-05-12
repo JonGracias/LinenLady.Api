@@ -25,4 +25,8 @@ public interface IInventoryRepository
     Task<GetCountsResponse> GetCounts(CancellationToken ct);
 
     Task<bool> Update(int inventoryId, UpdateItemFields fields, CancellationToken ct);
+
+    Task<List<ItemAvailabilityDto>> GetAvailability(
+    int[] inventoryIds,
+    CancellationToken ct);
 }

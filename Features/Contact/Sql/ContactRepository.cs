@@ -1,7 +1,7 @@
-namespace LinenLady.Api.Features.Contact.Sql;
+namespace LinenLady.API.Features.Contact.Sql;
 
 using Dapper;
-using LinenLady.Api.Features.Contact.Contracts;
+using LinenLady.API.Features.Contact.Contracts;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 
@@ -44,10 +44,17 @@ public sealed class ContactRepository(IConfiguration cfg) : IContactRepository
             row, cancellationToken: ct));
     }
 
-    public Task MarkSentAsync(long submissionId, string providerMessageId, CancellationToken ct = default)
+    // NOTE: `async` + `await` here is critical. The earlier version did:
+    //   `return db.ExecuteAsync(...)` (no await), and `using var db` then
+    //   disposed the connection the moment the method returned — but the
+    //   Task we returned was still trying to run the query against the
+    //   now-disposed connection. Dapper saw the connection close mid-flight
+    //   and raised TaskCanceledException. Adding `await` keeps the method
+    //   alive until the query completes, so `using` only fires after.
+    public async Task MarkSentAsync(long submissionId, string providerMessageId, CancellationToken ct = default)
     {
         using var db = Connect();
-        return db.ExecuteAsync(new CommandDefinition(
+        await db.ExecuteAsync(new CommandDefinition(
             """
             UPDATE cust.ContactSubmission
             SET Status = 'Sent',
@@ -59,10 +66,10 @@ public sealed class ContactRepository(IConfiguration cfg) : IContactRepository
             cancellationToken: ct));
     }
 
-    public Task MarkFailedAsync(long submissionId, string error, CancellationToken ct = default)
+    public async Task MarkFailedAsync(long submissionId, string error, CancellationToken ct = default)
     {
         using var db = Connect();
-        return db.ExecuteAsync(new CommandDefinition(
+        await db.ExecuteAsync(new CommandDefinition(
             """
             UPDATE cust.ContactSubmission
             SET Status = 'Failed', ErrorMessage = @Error
