@@ -1,7 +1,8 @@
-namespace LinenLady.API.Features.Contact.Email;
+namespace LinenLady.API.Features.Email;
 
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
+using LinenLady.API.Features.Contact;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 

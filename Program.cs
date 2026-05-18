@@ -27,13 +27,17 @@ using Microsoft.IdentityModel.Tokens;
 using LinenLady.API.Contracts;
 using LinenLady.API.Customers.Services;
 using LinenLady.API.Features.Contact;
-using LinenLady.API.Features.Contact.Email;
+using LinenLady.API.Features.Email;
 using LinenLady.API.Features.Contact.Service;
 using LinenLady.API.Features.Contact.Sql;
 using Microsoft.Extensions.Options;
 using LinenLady.API.Inventory.Availability.Handler;
+using LinenLady.API.Square.Handler;
+using LinenLady.API.Features.Orders;
+using LinenLady.API.Features.Orders.Email;
 
 var builder = WebApplication.CreateBuilder(args);
+
 
 // ─── Connection string fallback ──────────────────────────────────────────────
 // Support both the legacy env-var style (SQL_CONNECTION_STRING) used by the
@@ -70,9 +74,12 @@ builder.Services
 builder.Services.AddHttpClient("resend", (sp, client) =>
 {
     var opts = sp.GetRequiredService<IOptions<ContactOptions>>().Value;
+    var key = (opts.ResendApiKey ?? "").Trim();
     client.BaseAddress = new Uri("https://api.resend.com/");
     client.DefaultRequestHeaders.Authorization =
-        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", opts.ResendApiKey);
+        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", key);
+    client.DefaultRequestVersion = System.Net.HttpVersion.Version11;
+    client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact;
     client.Timeout = TimeSpan.FromSeconds(10);
 });
 
@@ -130,7 +137,7 @@ builder.Services.AddAuthorization(options =>
                 clerkOpts.AdminOrgId,
                 StringComparison.Ordinal)));
 
-    options.FallbackPolicy = new AuthorizationPolicyBuilder()
+    options.DefaultPolicy = new AuthorizationPolicyBuilder()
         .RequireAuthenticatedUser()
         .Build();
 });
@@ -194,6 +201,7 @@ builder.Services.AddScoped<ReAddToBasketHandler>();
 builder.Services.AddScoped<CheckoutHandler>();
 builder.Services.AddScoped<GetMyOrdersHandler>();
 builder.Services.AddScoped<GetOrderByIdHandler>();
+builder.Services.AddScoped<CancelOrderHandler>();
 builder.Services.AddScoped<AskNoemiHandler>();
 builder.Services.AddScoped<ExpireStaleOrdersHandler>();
 
@@ -201,6 +209,15 @@ builder.Services.AddScoped<ExpireStaleOrdersHandler>();
 builder.Services.AddScoped<IContactRepository, ContactRepository>();
 builder.Services.AddScoped<IEmailSender,       ResendEmailSender>();
 builder.Services.AddScoped<IContactService,    ContactService>();
+
+// ── Orders: email ──────────────────────────────────────────────────
+builder.Services
+    .AddOptions<OrdersOptions>()
+    .Bind(builder.Configuration.GetSection(OrdersOptions.SectionName))
+    .Validate(o => !string.IsNullOrWhiteSpace(o.RecipientEmail), "Orders:RecipientEmail is required")
+    .ValidateOnStart();
+
+builder.Services.AddScoped<OrderPaidEmailComposer>();
 
 // Square
 builder.Services.AddHttpClient("square");

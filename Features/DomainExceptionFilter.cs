@@ -33,6 +33,21 @@ public sealed class DomainExceptionFilter : IExceptionFilter
             return;
         }
 
+        if (context.Exception is OrderNotCancellableException notCancellable)
+        {
+            context.Result = new ObjectResult(new
+            {
+                reason        = "not_cancellable",
+                message       = notCancellable.Message,
+                currentStatus = notCancellable.OrderStatus,
+            })
+            {
+                StatusCode = 409,
+            };
+            context.ExceptionHandled = true;
+            return;
+        }
+
         var (status, message) = context.Exception switch
         {
             // Customer/reservation domain

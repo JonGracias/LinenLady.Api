@@ -21,6 +21,24 @@ public sealed class OrderNotFoundException : Exception
     public OrderNotFoundException(string m) : base(m) {}
 }
 
+/// <summary>
+/// Customer tried to cancel an order that isn't in a cancellable state.
+/// Distinct from OrderNotFoundException because the order DOES exist and
+/// is theirs — they just can't cancel it via the self-serve endpoint. The
+/// most common case is "the Square webhook landed before your cancel POST
+/// did, so this order is now Paid and you need to message Noemi for a
+/// refund instead." Frontend uses OrderStatus to route the customer to
+/// the message thread when the cause is Paid.
+/// </summary>
+public sealed class OrderNotCancellableException : Exception
+{
+    public string OrderStatus { get; }
+    public OrderNotCancellableException(string status, string m) : base(m)
+    {
+        OrderStatus = status;
+    }
+}
+
 // ─────────────────────────────────────────────────────────────
 // Basket: get + add + remove + re-add
 // ─────────────────────────────────────────────────────────────
@@ -290,6 +308,164 @@ public sealed class GetOrderByIdHandler
             throw new OrderNotFoundException("Order not found.");
 
         return order;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Cancel a PaymentPending order (customer-initiated)
+// ─────────────────────────────────────────────────────────────
+//
+// Customer-initiated cancel for orders that haven't been paid yet. Money
+// hasn't moved (the order is PaymentPending), so this is purely a status
+// flip + inventory recovery. Paid orders are NOT cancellable through this
+// path — the customer must message Noemi for a manual refund.
+//
+// The actual work is done by the existing _repo.CancelOrderAsync method,
+// which the timeout sweeper also calls. We're effectively exposing one
+// row of the sweeper's work to the customer, scoped by ownership.
+//
+// CancelOrderAsync is already race-safe — its UPDATE has WHERE Status =
+// 'PaymentPending' so only one of three concurrent writers wins:
+//   1. This handler (customer clicked Cancel)
+//   2. ExpireStaleOrdersHandler (hourly sweeper)
+//   3. SquareWebhookHandler (Square POSTs payment.updated)
+//
+// If we lose the race we re-read the order to find out who won and surface
+// the right error.
+//
+// Bonus over the original spec: CancelOrderAsync ALSO recreates the
+// customer's basket reservations for items still purchasable. So a
+// customer who cancels and changes their mind sees the pieces back in
+// their basket immediately, no /shop re-add needed. Better UX than a
+// pure "release" would have given us.
+
+public sealed class CancelOrderHandler
+{
+    private readonly ICustomerRepository _repo;
+    private readonly ILogger<CancelOrderHandler> _log;
+
+    public CancelOrderHandler(ICustomerRepository repo, ILogger<CancelOrderHandler> log)
+    {
+        _repo = repo;
+        _log  = log;
+    }
+
+    public async Task<OrderDto> HandleAsync(
+        string clerkUserId, int orderId, CancellationToken ct)
+    {
+        var customer = await _repo.GetByClerkIdAsync(clerkUserId)
+            ?? throw new CustomerNotFoundException("Profile not found.");
+
+        // Ownership check via a read-only fetch. Same pattern as
+        // GetOrderByIdHandler — OrderId is enumerable, so we 404 rather
+        // than 403 on cross-customer probes to avoid revealing existence.
+        var order = await _repo.GetOrderAsync(orderId)
+            ?? throw new OrderNotFoundException("Order not found.");
+
+        if (order.CustomerId != customer.CustomerId)
+            throw new OrderNotFoundException("Order not found.");
+
+        // Pre-flight status check. Cheap, gives a clearer error than
+        // letting the repo's UPDATE no-op silently. CancelOrderAsync
+        // accepts 'Cancelled' and 'Failed' as newStatus, but it only
+        // moves rows currently in 'PaymentPending' — its WHERE clause
+        // is the gatekeeper, not the newStatus value.
+        switch (order.Status)
+        {
+            case "Cancelled":
+                // Idempotent success — the order is already in the state
+                // the customer wants. Return the current row.
+                _log.LogInformation(
+                    "Order {OrderId} cancel: already Cancelled (idempotent).", orderId);
+                return order;
+
+            case "Paid":
+                throw new OrderNotCancellableException(
+                    order.Status,
+                    "This order has already been paid. Message Noemi to request a refund.");
+
+            case "PaymentPending":
+                // The normal path. Fall through to the repo call.
+                break;
+
+            case "Failed":
+                // Edge case: an order that already failed via webhook
+                // doesn't need a customer-initiated cancel — there's
+                // nothing to cancel. Treat as idempotent success and
+                // return the row.
+                _log.LogInformation(
+                    "Order {OrderId} cancel: status Failed, nothing to cancel.", orderId);
+                return order;
+
+            default:
+                // Defensive: any future status we don't know about.
+                throw new OrderNotCancellableException(
+                    order.Status,
+                    $"This order is in an unexpected state ({order.Status}) and " +
+                    "can't be cancelled. Message Noemi for help.");
+        }
+
+        // Hand off to the existing repo method. Returns the count of
+        // reservations recreated (informational — we don't surface it).
+        // If 0 rows are affected by the UPDATE inside, we lost a race;
+        // the post-read below detects which writer won.
+        await _repo.CancelOrderAsync(orderId, "Cancelled");
+
+        // Re-fetch to get the post-state. Three cases:
+        //   1. Our cancel succeeded — Status = 'Cancelled', return it.
+        //   2. Webhook beat us — Status = 'Paid', throw Paid exception.
+        //   3. Sweeper beat us — Status = 'Cancelled', idempotent success.
+        //
+        // The repo's UPDATE doesn't tell us which (the affected count is
+        // 0 in both 2 and 3), so we re-read.
+        var afterCancel = await _repo.GetOrderAsync(orderId)
+            ?? throw new OrderNotFoundException("Order not found.");
+
+        if (afterCancel.Status == "Paid")
+            throw new OrderNotCancellableException(
+                afterCancel.Status,
+                "Your payment just went through — this order can no longer " +
+                "be cancelled. Message Noemi to request a refund.");
+
+        if (afterCancel.Status != "Cancelled")
+            // Shouldn't reach here under any normal flow — log and surface
+            // a generic error rather than returning a confused state.
+            throw new OrderNotCancellableException(
+                afterCancel.Status,
+                "This order couldn't be cancelled. Message Noemi for help.");
+
+        // Post a Noemi-thread message so the admin side has a trail of
+        // the cancel without needing a separate "cancellations" inbox.
+        // Mirrors the pattern in CheckoutHandler.HandleAsync. Best-effort —
+        // a message-send failure doesn't roll back the cancel.
+        try
+        {
+            var lines = string.Join("\n",
+                afterCancel.Items.Select(i =>
+                    $"  • {i.ItemName}" +
+                    (string.IsNullOrWhiteSpace(i.ItemSku) ? "" : $" (SKU {i.ItemSku})")));
+
+            var body =
+                $"Order #{afterCancel.OrderId} cancelled by customer.\n{lines}\n\n" +
+                "Pieces still available have been returned to your basket.";
+
+            await _repo.SendMessageAsync(
+                customer.CustomerId,
+                new SendMessageRequest(body, ReservationId: null, OrderId: afterCancel.OrderId),
+                direction: "Inbound");
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex,
+                "Cancel auto-message for order {OrderId} failed (non-fatal).",
+                afterCancel.OrderId);
+        }
+
+        _log.LogInformation(
+            "Order {OrderId} cancelled by customer {CustomerId} ({ItemCount} items).",
+            afterCancel.OrderId, customer.CustomerId, afterCancel.Items.Count);
+
+        return afterCancel;
     }
 }
 

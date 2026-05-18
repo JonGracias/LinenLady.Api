@@ -1,11 +1,9 @@
 namespace LinenLady.API.Features.Contact.Service;
 
-using System.Net;
 using System.Text;
 using LinenLady.API.Features.Contact.Contracts;
-using LinenLady.API.Features.Contact.Email;
+using LinenLady.API.Features.Email;
 using LinenLady.API.Features.Contact.Sql;
-using LinenLady.API.Filters;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -131,6 +129,11 @@ public sealed class ContactService(
 
     private async Task EnforceRateLimitsAsync(string? ip, string email, CancellationToken ct)
     {
+        if (_opts.DisableRateLimits)
+        {
+            _log.LogWarning("Contact rate limits are DISABLED via configuration.");
+            return;
+        }
         var now = DateTime.UtcNow;
 
         if (_opts.MaxPerIpPerHour > 0 && !string.IsNullOrEmpty(ip))
@@ -199,12 +202,12 @@ public sealed class ContactService(
     private static (string html, string text) RenderOwnerBody(
         string fromName, string fromEmail, string body, string? sku)
     {
-        var safeBody = WebUtility.HtmlEncode(body).Replace("\n", "<br>");
-        var safeName = WebUtility.HtmlEncode(fromName);
-        var safeMail = WebUtility.HtmlEncode(fromEmail);
+        var safeBody = System.Net.WebUtility.HtmlEncode(body).Replace("\n", "<br>");
+        var safeName = System.Net.WebUtility.HtmlEncode(fromName);
+        var safeMail = System.Net.WebUtility.HtmlEncode(fromEmail);
         var skuLine  = string.IsNullOrWhiteSpace(sku)
             ? ""
-            : $"<p style='color:#6b6358;font-size:13px;'>About item: <strong>{WebUtility.HtmlEncode(sku)}</strong></p>";
+            : $"<p style='color:#6b6358;font-size:13px;'>About item: <strong>{System.Net.WebUtility.HtmlEncode(sku)}</strong></p>";
 
         var html = $"""
             <div style="font-family:Georgia,serif;max-width:560px;color:#3a342e;">

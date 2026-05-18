@@ -27,6 +27,20 @@ public partial interface ICustomerRepository
     // ── Basket (reservations as the customer sees them) ──────────────
 
     /// <summary>
+    /// Attempts to claim "we will send the order-paid email for this order"
+    /// for this caller. Atomically flips NotificationEmailSentAt from NULL
+    /// to now and returns true ONLY for the caller that won the race.
+    /// Subsequent callers (Square webhook retries, duplicate deliveries)
+    /// get false and skip sending.
+    ///
+    /// Returns false also for nonexistent orders — handler should already
+    /// have a non-null OrderDto from MarkOrderPaidAsync before calling this,
+    /// so a false here means "someone else just sent the email."
+    /// </summary>
+    
+    Task<bool> TryClaimOrderPaidEmailAsync(int orderId);   
+    
+    /// <summary>
     /// All Active + Expired reservations for a customer, newest first.
     /// "Recently expired" UX (#3) consumes the same list and filters
     /// client-side; the API returns both so the UI can show a unified
@@ -460,6 +474,29 @@ public partial class CustomerRepository
             """,
             new { OrderRowId = orderId, link.PaymentLinkId, link.Url, link.OrderId });
         return await GetOrderAsync(orderId);
+    }
+
+    public async Task<bool> TryClaimOrderPaidEmailAsync(int orderId)
+    {
+        using var db = Connect();
+
+        // Atomic claim. The OUTPUT clause returns the row's OrderId only on
+        // the UPDATE that actually moved the column from NULL to now —
+        // anyone losing the race gets no output rows.
+        //
+        // ExecuteScalarAsync<int?> returns null when zero rows are output,
+        // so "non-null = we won the race" is the right test.
+        var claimed = await db.ExecuteScalarAsync<int?>(
+            """
+            UPDATE cust.[Order]
+            SET    NotificationEmailSentAt = SYSUTCDATETIME()
+            OUTPUT inserted.OrderId
+            WHERE  OrderId = @OrderId
+            AND  NotificationEmailSentAt IS NULL;
+            """,
+            new { OrderId = orderId });
+
+        return claimed is not null;
     }
 
     public async Task<OrderDto?> MarkOrderPaidAsync(string squareOrderId)

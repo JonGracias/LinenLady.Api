@@ -31,4 +31,6 @@ public sealed class ContactOptions
 
     /// <summary>If true, also send the visitor a confirmation email ("we got your message"). Default true.</summary>
     public bool SendVisitorConfirmation { get; set; } = true;
+    
+    public bool DisableRateLimits { get; set; }
 }

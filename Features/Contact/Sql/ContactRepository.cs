@@ -83,7 +83,7 @@ public sealed class ContactRepository(IConfiguration cfg) : IContactRepository
     {
         using var db = Connect();
         return await db.ExecuteScalarAsync<int>(new CommandDefinition(
-            "SELECT COUNT(*) FROM cust.ContactSubmission WHERE IpAddress = @Ip AND CreatedAt >= @Since;",
+            "SELECT COUNT(*) FROM cust.ContactSubmission WHERE IpAddress = @Ip AND CreatedAt >= @Since AND Status = 'Sent';",
             new { Ip = ip, Since = sinceUtc }, cancellationToken: ct));
     }
 
@@ -91,7 +91,7 @@ public sealed class ContactRepository(IConfiguration cfg) : IContactRepository
     {
         using var db = Connect();
         return await db.ExecuteScalarAsync<int>(new CommandDefinition(
-            "SELECT COUNT(*) FROM cust.ContactSubmission WHERE FromEmail = @Email AND CreatedAt >= @Since;",
+            "SELECT COUNT(*) FROM cust.ContactSubmission WHERE FromEmail = @Email AND CreatedAt >= @Since AND Status = 'Sent';",
             new { Email = email, Since = sinceUtc }, cancellationToken: ct));
     }
 
