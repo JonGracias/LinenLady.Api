@@ -115,7 +115,8 @@ public sealed class CheckoutController(CheckoutHandler handler) : ControllerBase
 [Route("api/customers/me/orders")]
 public sealed class CustomerOrdersController(
     GetMyOrdersHandler   listHandler,
-    GetOrderByIdHandler  detailHandler) : ControllerBase
+    GetOrderByIdHandler  detailHandler,
+    CancelOrderHandler   cancelHandler) : ControllerBase
 {
     // GET /api/customers/me/orders
     [HttpGet]
@@ -136,6 +137,24 @@ public sealed class CustomerOrdersController(
         if (clerkUserId is null) return Unauthorized();
 
         return Ok(await detailHandler.HandleAsync(clerkUserId, orderId, ct));
+    }
+
+    // POST /api/customers/me/orders/{orderId}/cancel
+    //
+    // Customer-initiated cancel for PaymentPending (or Failed) orders.
+    // Returns the updated order with Status = 'Cancelled'. The handler
+    // throws OrderNotCancellableException for Paid orders so the global
+    // exception filter can map it to a 409 with a structured body the
+    // frontend uses to route the customer to the message-Noemi flow.
+    [HttpPost("{orderId:int}/cancel")]
+    public async Task<IActionResult> Cancel(
+        int orderId, CancellationToken ct)
+    {
+        var clerkUserId = User.GetClerkUserId();
+        if (clerkUserId is null) return Unauthorized();
+        if (orderId <= 0) return BadRequest("Invalid order id.");
+
+        return Ok(await cancelHandler.HandleAsync(clerkUserId, orderId, ct));
     }
 }
 

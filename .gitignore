@@ -84,7 +84,6 @@ PublishScripts/
 appsettings.Development.json
 appsettings.Local.json
 appsettings.*.Local.json
-appsettings.*
 secrets.json
 *.pfx
 *.key

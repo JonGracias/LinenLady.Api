@@ -27,6 +27,20 @@ public partial interface ICustomerRepository
     // ── Basket (reservations as the customer sees them) ──────────────
 
     /// <summary>
+    /// Attempts to claim "we will send the order-paid email for this order"
+    /// for this caller. Atomically flips NotificationEmailSentAt from NULL
+    /// to now and returns true ONLY for the caller that won the race.
+    /// Subsequent callers (Square webhook retries, duplicate deliveries)
+    /// get false and skip sending.
+    ///
+    /// Returns false also for nonexistent orders — handler should already
+    /// have a non-null OrderDto from MarkOrderPaidAsync before calling this,
+    /// so a false here means "someone else just sent the email."
+    /// </summary>
+    
+    Task<bool> TryClaimOrderPaidEmailAsync(int orderId);   
+    
+    /// <summary>
     /// All Active + Expired reservations for a customer, newest first.
     /// "Recently expired" UX (#3) consumes the same list and filters
     /// client-side; the API returns both so the UI can show a unified
@@ -155,31 +169,36 @@ public partial class CustomerRepository
     {
         using var db = Connect();
 
-        // Single round-trip: the INSERT is conditional on availability so
-        // we don't have a TOCTOU window between "is it available?" and
-        // "claim it." The race-loser gets a no-op; the handler layer
-        // surfaces the right 409 by re-querying.
         return await db.QueryFirstOrDefaultAsync<ReservationDto>(
             $"""
             DECLARE @Created TABLE (ReservationId INT);
 
             INSERT INTO cust.Reservation
-                (CustomerId, InventoryId, Status, ExpiresAt, CustomerNotes)
+                (CustomerId, InventoryId, Status, ExpiresAt, CustomerNotes, AmountCents)
             OUTPUT inserted.ReservationId INTO @Created
             SELECT @CustomerId, @InventoryId, 'Active',
-                   DATEADD(DAY, 2, SYSUTCDATETIME()), @CustomerNotes
+                DATEADD(DAY, 2, SYSUTCDATETIME()), @CustomerNotes, i.UnitPriceCents
             FROM   inv.Inventory i
             WHERE  i.InventoryId = @InventoryId
-              AND  i.IsActive = 1 AND i.IsDraft = 0 AND i.IsDeleted = 0
-              AND  NOT EXISTS (
-                       SELECT 1 FROM cust.Reservation r
-                       WHERE  r.InventoryId = i.InventoryId
-                         AND  r.Status      = 'Active'
-                         AND  r.ExpiresAt   > SYSUTCDATETIME()
-                   );
+            AND  i.IsActive = 1 AND i.IsDraft = 0 AND i.IsDeleted = 0
+            AND  NOT EXISTS (
+                    SELECT 1 FROM cust.Reservation r
+                    WHERE  r.InventoryId = i.InventoryId
+                        AND  r.Status      = 'Active'
+                        AND  r.ExpiresAt   > SYSUTCDATETIME()
+                )
+            AND  NOT EXISTS (
+                    -- NEW: block if a PaymentPending order already claims this item.
+                    -- Closes the gap between checkout (reservation→Expired) and
+                    -- payment completion (inv.Inventory.IsActive→0).
+                    SELECT 1 FROM cust.OrderItem oi
+                    JOIN   cust.[Order]    o ON o.OrderId = oi.OrderId
+                    WHERE  oi.InventoryId = i.InventoryId
+                        AND  o.Status       = 'PaymentPending'
+                );
 
             IF NOT EXISTS (SELECT 1 FROM @Created)
-                SELECT TOP 0 NULL;  -- handler maps null → NotFound or Conflict
+                SELECT TOP 0 NULL;
             ELSE
                 {BasketSelect}
                 WHERE r.ReservationId = (SELECT TOP 1 ReservationId FROM @Created);
@@ -293,13 +312,7 @@ public partial class CustomerRepository
         var orderIds = orders.Select(o => o.OrderId).ToArray();
 
         var items = (await db.QueryAsync<OrderItemDto>(
-            """
-            SELECT OrderItemId, OrderId, ReservationId, InventoryId,
-                ItemName, ItemSku, UnitPriceCents, ItemPublicId, ThumbnailUrl
-            FROM cust.OrderItem
-            WHERE OrderId IN @orderIds
-            ORDER BY OrderId, OrderItemId
-            """,
+            OrderItemSelect + " WHERE oi.OrderId IN @orderIds ORDER BY oi.OrderId, oi.OrderItemId",
             new { orderIds })).ToList();
 
         // 3. Group items by OrderId and attach. `with` works on records;
@@ -463,6 +476,29 @@ public partial class CustomerRepository
         return await GetOrderAsync(orderId);
     }
 
+    public async Task<bool> TryClaimOrderPaidEmailAsync(int orderId)
+    {
+        using var db = Connect();
+
+        // Atomic claim. The OUTPUT clause returns the row's OrderId only on
+        // the UPDATE that actually moved the column from NULL to now —
+        // anyone losing the race gets no output rows.
+        //
+        // ExecuteScalarAsync<int?> returns null when zero rows are output,
+        // so "non-null = we won the race" is the right test.
+        var claimed = await db.ExecuteScalarAsync<int?>(
+            """
+            UPDATE cust.[Order]
+            SET    NotificationEmailSentAt = SYSUTCDATETIME()
+            OUTPUT inserted.OrderId
+            WHERE  OrderId = @OrderId
+            AND  NotificationEmailSentAt IS NULL;
+            """,
+            new { OrderId = orderId });
+
+        return claimed is not null;
+    }
+
     public async Task<OrderDto?> MarkOrderPaidAsync(string squareOrderId)
     {
         using var conn = (SqlConnection)Connect();
@@ -557,20 +593,20 @@ public partial class CustomerRepository
             var recreated = await conn.ExecuteAsync(
                 """
                 INSERT INTO cust.Reservation
-                    (CustomerId, InventoryId, Status, ExpiresAt, CustomerNotes)
+                    (CustomerId, InventoryId, Status, ExpiresAt, CustomerNotes, AmountCents)
                 SELECT o.CustomerId, oi.InventoryId, 'Active',
-                       DATEADD(DAY, 2, SYSUTCDATETIME()), NULL
+                       DATEADD(DAY, 2, SYSUTCDATETIME()), NULL, oi.UnitPriceCents
                 FROM   cust.OrderItem  oi
                 JOIN   cust.[Order]    o  ON o.OrderId = oi.OrderId
                 JOIN   inv.Inventory   i  ON i.InventoryId = oi.InventoryId
                 WHERE  oi.OrderId = @OrderId
-                  AND  i.IsActive = 1 AND i.IsDraft = 0 AND i.IsDeleted = 0
-                  AND  NOT EXISTS (
-                           SELECT 1 FROM cust.Reservation r
-                           WHERE  r.InventoryId = oi.InventoryId
-                             AND  r.Status      = 'Active'
-                             AND  r.ExpiresAt   > SYSUTCDATETIME()
-                       );
+                    AND  i.IsActive = 1 AND i.IsDraft = 0 AND i.IsDeleted = 0
+                    AND  NOT EXISTS (
+                        SELECT 1 FROM cust.OrderItem oi2
+                        JOIN   cust.[Order]    o2 ON o2.OrderId = oi2.OrderId
+                        WHERE  oi2.InventoryId = oi.InventoryId
+                        AND  o2.Status       = 'PaymentPending'
+                    )
                 """,
                 new { OrderId = orderId }, tx);
 

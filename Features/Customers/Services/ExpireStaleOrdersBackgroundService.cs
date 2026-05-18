@@ -20,6 +20,9 @@ public sealed class ExpireStaleOrdersBackgroundService : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<ExpireStaleOrdersBackgroundService> _log;
+    private string? _lastErrorSignature;
+    private int     _suppressedErrorCount;
+    private DateTime _lastErrorLoggedAt = DateTime.MinValue;
 
     // Run interval. One minute is overkill for a sweeper that fires on a
     // 24h horizon, but keeps the operation cheap and lets a shortened
@@ -40,6 +43,7 @@ public sealed class ExpireStaleOrdersBackgroundService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
+        
         _log.LogInformation(
             "ExpireStaleOrdersBackgroundService started (interval {Interval}).",
             _interval);
@@ -58,16 +62,45 @@ public sealed class ExpireStaleOrdersBackgroundService : BackgroundService
 
                 await handler.HandleAsync(ct);
             }
+            
             catch (Exception ex)
             {
-                // Never let a sweep failure kill the background service —
-                // log and try again on the next tick. The same defensive
-                // pattern as the reservation sweeper.
-                _log.LogError(ex, "Order sweep failed; will retry next tick.");
+                var signature = $"{ex.GetType().FullName}|{ex.Message}|{ex.StackTrace?.Split('\n').FirstOrDefault()}";
+
+                if (signature == _lastErrorSignature)
+                {
+                    // Same failure as last tick — suppress the stack trace, just count.
+                    _suppressedErrorCount++;
+
+                    // Every 15 minutes, emit a heartbeat so it doesn't go totally silent.
+                    if (DateTime.UtcNow - _lastErrorLoggedAt > TimeSpan.FromMinutes(15))
+                    {
+                        _log.LogWarning(
+                            "Order sweep still failing with same error ({Count} ticks suppressed): {Message}",
+                            _suppressedErrorCount, ex.Message);
+                        _lastErrorLoggedAt = DateTime.UtcNow;
+                        _suppressedErrorCount = 0;
+                    }
+                }
+                else
+                {
+                    // New error (or first occurrence) — log it in full, reset counter.
+                    if (_suppressedErrorCount > 0)
+                    {
+                        _log.LogInformation(
+                            "Previous order sweep error stopped repeating after {Count} suppressed ticks.",
+                            _suppressedErrorCount);
+                    }
+                    _log.LogError(ex, "Order sweep failed; will retry next tick.");
+                    _lastErrorSignature   = signature;
+                    _suppressedErrorCount = 0;
+                    _lastErrorLoggedAt    = DateTime.UtcNow;
+                }
             }
 
+            // then your existing delay:
             try { await Task.Delay(_interval, ct); }
-            catch (TaskCanceledException) { return; }
+            catch (TaskCanceledException) { break; }
         }
     }
 }

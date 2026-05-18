@@ -12,7 +12,6 @@
 
 namespace LinenLady.API.Square;
 
-using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using LinenLady.API.Contracts;

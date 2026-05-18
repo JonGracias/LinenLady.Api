@@ -1,0 +1,1 @@
+SELECT * FROM cust.Customer WHERE ClerkUserId = '<the sub claim from B>';

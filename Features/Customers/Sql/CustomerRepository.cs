@@ -7,6 +7,7 @@ using Microsoft.Data.SqlClient;
 
 public partial interface ICustomerRepository
 {
+    Task<CustomerDto?> GetByIdAsync(int customerId);
     Task<CustomerDto?>          GetByClerkIdAsync(string clerkUserId);
     Task<CustomerDto>           UpsertAsync(string clerkUserId, string email, bool isEmailVerified, UpsertCustomerRequest req);
     Task<CustomerDto?>          UpdateAsync(int customerId, UpdateCustomerRequest req);
@@ -79,6 +80,20 @@ public partial class CustomerRepository : ICustomerRepository
             WHERE ClerkUserId = @ClerkUserId AND IsActive = 1
             """,
             new { ClerkUserId = clerkUserId });
+    }
+
+    // CustomerRepository
+    public async Task<CustomerDto?> GetByIdAsync(int customerId)
+    {
+        using var db = Connect();
+        return await db.QueryFirstOrDefaultAsync<CustomerDto>(
+            """
+            SELECT CustomerId, ClerkUserId, Email, FirstName, LastName, Phone,
+                    IsEmailVerified, CreatedAt
+            FROM   cust.Customer
+            WHERE  CustomerId = @customerId;
+            """,
+            new { customerId });
     }
 
     public async Task<CustomerDto> UpsertAsync(

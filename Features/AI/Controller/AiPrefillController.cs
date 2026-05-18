@@ -1,4 +1,4 @@
-namespace LinenLady.Inventory.Api.Controllers;
+namespace LinenLady.Inventory.API.Controllers;
 
 using LinenLady.API.AI.Prefill.Service;
 using LinenLady.API.Auth;

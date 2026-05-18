@@ -1,7 +1,8 @@
-namespace LinenLady.Inventory.Api.Controllers;
+namespace LinenLady.Inventory.API.Controllers;
 
 using LinenLady.API.Auth;
 using LinenLady.API.Contracts;
+using LinenLady.API.Inventory.Availability.Handler;
 using LinenLady.API.Inventory.Items.Handler;
 using LinenLady.API.Inventory.Sql;
 using Microsoft.AspNetCore.Authorization;
@@ -14,7 +15,8 @@ public sealed class InventoryController(
     GetItemsHandler listHandler,
     UpdateItemHandler updateHandler,
     SoftDeleteItemHandler deleteHandler,
-    CreateItemsHandler createHandler) : ControllerBase
+    CreateItemsHandler createHandler,
+    GetAvailabilityHandler availabilityHandler) : ControllerBase
 {
     // POST /items/drafts
     [Authorize(Policy = AuthPolicies.Admin)]
@@ -118,5 +120,51 @@ public sealed class InventoryController(
             SoftDeleteItemResult.NotFound => NotFound(),
             _ => StatusCode(500)
         };
+    }
+
+
+    // Returns availability state for the given inventory ids. Items not
+    // present in the response are implicitly available. Public access; if
+    // a JWT is present we pass the Clerk user id through so the handler
+    // can surface YourBasket / YourPendingPayment for the caller's own
+    // blocks, but the caller-resolution only happens when a block is
+    // actually detected (saves a DB round-trip on the common all-available
+    // case).
+    [AllowAnonymous]
+    [HttpGet("availability")]
+    public async Task<IActionResult> GetAvailability(
+        [FromQuery(Name = "ids")] string? ids,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(ids))
+            return Ok(new GetAvailabilityResponse());
+
+        var parsed = ids
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(s => int.TryParse(s, out var n) ? n : 0)
+            .Where(n => n > 0)
+            .Distinct()
+            .ToList();
+
+        if (parsed.Count == 0)
+            return Ok(new GetAvailabilityResponse());
+
+        if (parsed.Count > 200)
+            return BadRequest("Too many ids (max 200 per request).");
+
+        // Pull the Clerk user id from the JWT if the caller is authenticated.
+        // The handler does the customer-id resolution lazily — only if at
+        // least one item is blocked, so anonymous callers and "everything
+        // available" callers both skip the customer lookup entirely.
+        var clerkUserId = User?.Identity?.IsAuthenticated == true
+            ? User.FindFirst("sub")?.Value
+            : null;
+
+        var resp = await availabilityHandler.Handle(
+            new GetAvailabilityRequest { InventoryIds = parsed },
+            clerkUserId,
+            ct);
+
+        return Ok(resp);
     }
 }

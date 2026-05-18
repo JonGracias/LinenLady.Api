@@ -4,7 +4,7 @@ using System.Data;
 using LinenLady.API.Contracts;
 using Microsoft.Data.SqlClient;
 
-public sealed class InventoryRepository : IInventoryRepository
+public sealed partial class InventoryRepository : IInventoryRepository
 {
     private readonly string _connStr;
 
@@ -370,4 +370,5 @@ public sealed class InventoryRepository : IInventoryRepository
         "featured" => 3,
         _          => -1
     };
+
 }
