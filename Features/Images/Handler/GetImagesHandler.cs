@@ -16,7 +16,7 @@ public sealed class GetImagesHandler
 
     public async Task<(bool itemExists, IReadOnlyList<InventoryImageDto> images)> Handle(
         int inventoryId,
-        int? ttlMinutes,
+        int? ttlMinutes, // accepted for backward compat; ignored
         string blobConnStr,
         string containerName,
         CancellationToken ct)
@@ -27,10 +27,9 @@ public sealed class GetImagesHandler
 
         var images = (await _sql.GetImages(inventoryId, ct)).ToList();
 
-        // TTL rules copied from your existing GetImageReadUrls
-        var ttl = ClampTtl(ttlMinutes);
-
-        // Build SAS URL per image (same as GetImageReadUrls)
+        // Public blob URLs — no SAS, no expiry. Cache-friendly across
+        // browser sessions and CDN. ttlMinutes is accepted for backward
+        // compatibility with existing clients but is now ignored.
         foreach (var img in images)
         {
             if (string.IsNullOrWhiteSpace(img.ImagePath))
@@ -38,22 +37,13 @@ public sealed class GetImagesHandler
 
             var blobName = img.ImagePath.TrimStart('/');
 
-            img.ReadUrl = BlobSas.BuildReadUrl(
+            img.ReadUrl = BlobSas.BuildPublicUrl(
                 blobConnStr,
                 containerName,
-                blobName,
-                ttl
+                blobName
             );
         }
 
         return (true, images);
-    }
-
-    private static TimeSpan ClampTtl(int? ttlMinutes)
-    {
-        var minutes = ttlMinutes ?? 60;
-        if (minutes < 5) minutes = 5;
-        if (minutes > 240) minutes = 240;
-        return TimeSpan.FromMinutes(minutes);
     }
 }

@@ -79,4 +79,16 @@ public static class BlobSas
             .Split('=', 2)[1];
         return (accountName, accountKey);
     }
+
+    public static string BuildPublicUrl(
+        string connectionString,
+        string containerName,
+        string blobName)
+    {
+        // Container has anonymous blob-read access; no SAS needed.
+        // Stable URL means real CDN/browser cache hits on every request.
+        var container = new BlobContainerClient(connectionString, containerName);
+        var blobClient = container.GetBlobClient(blobName);
+        return blobClient.Uri.ToString();
+    }
 }

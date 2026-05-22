@@ -45,6 +45,22 @@ public sealed class SiteMediaSasService
         }
     }
 
+    public string GetPublicUrl(string blobPath)
+    {
+        if (!EnsureConfigured()) return "";
+
+        try
+        {
+            var client = new BlobClient(_opts.ConnectionString, _opts.SiteMediaContainerName, blobPath);
+            return client.Uri.ToString();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to build public URL for {BlobPath}.", blobPath);
+            return "";
+        }
+    }
+
     public string GenerateUploadSas(string blobPath, string contentType)
     {
         if (!EnsureConfigured())
@@ -64,7 +80,7 @@ public sealed class SiteMediaSasService
     }
 
     public SiteMediaDto WithReadUrl(SiteMediaDto m) =>
-        m with { ReadUrl = GenerateReadSas(m.BlobPath) };
+        m with { ReadUrl = GetPublicUrl(m.BlobPath) };
 
     public SiteConfigDto WithReadUrl(SiteConfigDto c) =>
         c with { Media = c.Media is null ? null : WithReadUrl(c.Media) };
