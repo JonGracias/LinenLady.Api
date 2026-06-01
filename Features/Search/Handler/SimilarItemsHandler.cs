@@ -6,12 +6,14 @@ using Microsoft.Data.SqlClient;
 public record SimilarItemResult(
     int     InventoryId,
     string  PublicId,
+    string  Sku,  
     string  Name,
     string? Description,
     int     UnitPriceCents,
     bool    IsActive,
     bool    IsDraft,
     double  Score);
+    
 
 public sealed class SimilarItemsHandler
 {
@@ -48,6 +50,7 @@ public sealed class SimilarItemsHandler
             SELECT
                 i.InventoryId,
                 CAST(i.PublicId AS nvarchar(36)) AS PublicId,
+                i.Sku,
                 i.Name,
                 i.Description,
                 i.UnitPriceCents,
@@ -75,18 +78,19 @@ public sealed class SimilarItemsHandler
             using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
             {
-                var vector = ParseVector(r.GetString(7));
+                var vector = ParseVector(r.GetString(8));
                 if (vector is null) continue;
 
                 candidates.Add((
                     new SimilarItemResult(
                         InventoryId:    r.GetInt32(0),
                         PublicId:       r.GetString(1),
-                        Name:           r.GetString(2),
-                        Description:    r.IsDBNull(3) ? null : r.GetString(3),
-                        UnitPriceCents: r.GetInt32(4),
-                        IsActive:       r.GetBoolean(5),
-                        IsDraft:        r.GetBoolean(6),
+                        Sku:            r.GetString(2), 
+                        Name:           r.GetString(3),
+                        Description:    r.IsDBNull(4) ? null : r.GetString(4),
+                        UnitPriceCents: r.GetInt32(5),
+                        IsActive:       r.GetBoolean(6),
+                        IsDraft:        r.GetBoolean(7),
                         Score:          0),
                     vector));
             }
