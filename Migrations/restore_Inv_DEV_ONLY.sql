@@ -7,3 +7,4 @@ SET IsActive = 1,
     UpdatedAt = SYSUTCDATETIME()
 WHERE IsActive = 0
   AND IsDeleted = 0;
+  
