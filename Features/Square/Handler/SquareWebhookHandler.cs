@@ -48,7 +48,6 @@ public sealed class SquareWebhookHandler
 
     public async Task HandleAsync(string rawBody, CancellationToken ct)
     {
-        _log.LogInformation("Square Webhook Received: {Body}", rawBody);
 
         using var doc = JsonDocument.Parse(rawBody);
         var root = doc.RootElement;

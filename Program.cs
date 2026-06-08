@@ -38,7 +38,6 @@ using LinenLady.API.Features.Orders.Email;
 
 var builder = WebApplication.CreateBuilder(args);
 
-
 // ─── Connection string fallback ──────────────────────────────────────────────
 // Support both the legacy env-var style (SQL_CONNECTION_STRING) used by the
 // old Functions app and the conventional ConnectionStrings:Sql configuration
@@ -81,6 +80,22 @@ builder.Services.AddHttpClient("resend", (sp, client) =>
     client.DefaultRequestVersion = System.Net.HttpVersion.Version11;
     client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact;
     client.Timeout = TimeSpan.FromSeconds(10);
+});
+ 
+// ─── Cors for intent and hardening ──────────────────────────────────────────────
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+    {
+        policy
+            .WithOrigins(
+                "https://noemithelinenlady.net",
+                "https://www.noemithelinenlady.net",
+                "https://dev.noemithelinenlady.net"
+            )
+            .AllowAnyMethod()
+            .AllowAnyHeader();
+    });
 });
 
 // ─── Authentication (Clerk JWT) ──────────────────────────────────────────────
@@ -141,6 +156,19 @@ builder.Services.AddAuthorization(options =>
         .RequireAuthenticatedUser()
         .Build();
 });
+
+builder.Services
+    .AddOptions<SquareOptions>()
+    .Bind(builder.Configuration.GetSection("Square"))
+    .Validate(
+        o => !string.IsNullOrWhiteSpace(o.WebhookSignatureKey),
+        "Square:WebhookSignatureKey required")
+    .Validate(
+        o => !string.IsNullOrWhiteSpace(o.WebhookNotificationUrl),
+        "Square:WebhookNotificationUrl required")
+    .ValidateOnStart();
+
+    
 // ─── Frontend Options ──────────────────────────────────────────────────────
 builder.Services.Configure<FrontendOptions>(builder.Configuration.GetSection("Frontend"));
 
@@ -261,8 +289,8 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
-
-// app.UseHttpsRedirection();
+app.UseCors();
+app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
