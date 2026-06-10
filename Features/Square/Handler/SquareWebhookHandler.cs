@@ -123,6 +123,32 @@ public sealed class SquareWebhookHandler
             return;
         }
 
+        // ── Status gate on OUR order, not just Square's payment ─────
+        // MarkOrderPaidAsync only flips rows that are still PaymentPending.
+        // A non-'Paid' status here means real money landed on an order we
+        // had already cancelled (sweeper timeout or customer cancel) — the
+        // stale Square link got paid. The repo correctly refused to
+        // resurrect the order: its items may already be back in a basket
+        // or sold to someone else. This is a REFUND situation, not an
+        // order-paid situation — alert Noemi with a distinct email and
+        // do NOT send the normal confirmation or deactivate inventory.
+        if (paid.Status != "Paid")
+        {
+            _log.LogError(
+                "Payment COMPLETED on order {OrderId} (Square order {SquareOrderId}) " +
+                "but its status is '{Status}', not Paid. Customer paid a stale link " +
+                "after cancellation — manual refund required.",
+                paid.OrderId, squareOrderId, paid.Status);
+
+            await _repo.LogNotificationAsync(
+                paid.CustomerId, reservationId: null,
+                "PaymentAfterCancellation", false,
+                $"Payment completed after order #{paid.OrderId} was already {paid.Status}.");
+
+            await TrySendPaymentAfterCancellationAlertAsync(paid, ct);
+            return;
+        }
+
         await _repo.LogNotificationAsync(
             paid.CustomerId, reservationId: null, "PaymentReceived", true);
 
@@ -137,6 +163,72 @@ public sealed class SquareWebhookHandler
         // duplicate deliveries get false and skip sending — durably,
         // across process restarts.
         await TrySendOrderPaidEmailAsync(paid, ct);
+    }
+
+    /// <summary>
+    /// At-most-once alert to Noemi when a payment lands on an order that
+    /// is no longer payable (Cancelled/Failed). Reuses the same
+    /// NotificationEmailSentAt sentinel as the normal order-paid email —
+    /// an order goes down exactly one of the two paths, so sharing the
+    /// sentinel keeps Square's retry deliveries from double-alerting.
+    /// </summary>
+    private async Task TrySendPaymentAfterCancellationAlertAsync(
+        OrderDto order, CancellationToken ct)
+    {
+        bool claimed;
+        try
+        {
+            claimed = await _repo.TryClaimOrderPaidEmailAsync(order.OrderId);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex,
+                "Payment-after-cancel alert claim failed for order {OrderId}; not sending. " +
+                "MANUAL FOLLOW-UP REQUIRED — see preceding error log for refund details.",
+                order.OrderId);
+            return;
+        }
+
+        if (!claimed)
+        {
+            _log.LogDebug(
+                "Payment-after-cancel alert for order {OrderId} already claimed — skipping.",
+                order.OrderId);
+            return;
+        }
+
+        var customer = await _repo.GetByIdAsync(order.CustomerId);
+        var customerEmail = customer?.Email ?? "(unknown)";
+        var customerName = customer is null
+            ? "(unknown customer)"
+            : string.Join(" ",
+                new[] { customer.FirstName, customer.LastName }
+                    .Where(s => !string.IsNullOrWhiteSpace(s))).Trim();
+        if (string.IsNullOrWhiteSpace(customerName))
+            customerName = customerEmail;
+
+        try
+        {
+            var message = _emailComposer.BuildPaymentAfterCancellationAlert(
+                order, customerEmail, customerName);
+            var providerId = await _emailSender.SendAsync(message, ct);
+
+            _log.LogInformation(
+                "Payment-after-cancel alert sent for order {OrderId} (provider id {ProviderId}).",
+                order.OrderId, providerId);
+        }
+        catch (EmailSendException ex)
+        {
+            // The ERROR log earlier in HandleAsync is the durable record —
+            // this just means the email leg failed too. Re-log at error so
+            // a Resend outage doesn't bury a refund-needed situation at
+            // warning level.
+            _log.LogError(ex,
+                "Payment-after-cancel alert email FAILED for order {OrderId}. " +
+                "Customer paid a cancelled order and Noemi has NOT been emailed — " +
+                "manual refund follow-up required.",
+                order.OrderId);
+        }
     }
 
     private async Task TrySendOrderPaidEmailAsync(

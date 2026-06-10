@@ -15,6 +15,11 @@ public sealed class ContactController(IContactService service) : ControllerBase
     /// <summary>
     /// Public "Contact Noemi" submission. No auth.
     /// Validation handled by [ApiController] model binding; rate limits enforced inside the service.
+    ///
+    /// Client IP comes from HttpContext.Connection.RemoteIpAddress only. Program.cs configures
+    /// UseForwardedHeaders so trusted Azure/App Service proxy headers can rewrite RemoteIpAddress.
+    /// Do not parse X-Forwarded-For directly here; that header is client-spoofable unless the
+    /// forwarded-header middleware has already validated the immediate proxy.
     /// </summary>
     [HttpPost]
     [ProducesResponseType(typeof(ContactResponse), StatusCodes.Status200OK)]
@@ -25,24 +30,10 @@ public sealed class ContactController(IContactService service) : ControllerBase
         [FromBody] ContactRequest request,
         CancellationToken ct)
     {
-        var ip        = GetClientIp();
+        var ip        = HttpContext.Connection.RemoteIpAddress?.ToString();
         var userAgent = Request.Headers.UserAgent.ToString();
 
         var result = await _service.SubmitAsync(request, ip, userAgent, ct);
         return Ok(result);
-    }
-
-    /// <summary>
-    /// Resolves the originating IP. Behind Azure Front Door / App Service the real
-    /// client lives in X-Forwarded-For. Trust only the leftmost entry.
-    /// </summary>
-    private string? GetClientIp()
-    {
-        if (Request.Headers.TryGetValue("X-Forwarded-For", out var xff) && xff.Count > 0)
-        {
-            var first = xff.ToString().Split(',', 2)[0].Trim();
-            if (!string.IsNullOrEmpty(first)) return first;
-        }
-        return HttpContext.Connection.RemoteIpAddress?.ToString();
     }
 }

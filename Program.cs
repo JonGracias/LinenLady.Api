@@ -35,6 +35,8 @@ using LinenLady.API.Inventory.Availability.Handler;
 using LinenLady.API.Square.Handler;
 using LinenLady.API.Features.Orders;
 using LinenLady.API.Features.Orders.Email;
+using Microsoft.AspNetCore.HttpOverrides;
+using System.Net;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -96,6 +98,50 @@ builder.Services.AddCors(options =>
             .AllowAnyMethod()
             .AllowAnyHeader();
     });
+});
+
+
+// ─── Forwarded headers ───────────────────────────────────────────────────────
+// Contact rate limiting must use HttpContext.Connection.RemoteIpAddress, not a
+// raw X-Forwarded-For header read in a controller. This middleware rewrites
+// RemoteIpAddress only when the immediate peer is one of the trusted proxies or
+// networks configured below.
+//
+// Configure in appsettings/portal as needed:
+//   ForwardedHeaders:KnownProxies:0  = "<single proxy IP>"
+//   ForwardedHeaders:KnownNetworks:0 = "<proxy CIDR, e.g. 10.0.0.0/8>"
+//
+// If no known proxy/network is configured, spoofed X-Forwarded-For values are
+// ignored and RemoteIpAddress remains the direct peer address. That is safer
+// than trusting attacker-supplied XFF.
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders =
+        ForwardedHeaders.XForwardedFor |
+        ForwardedHeaders.XForwardedProto;
+
+    // Only consume one trusted proxy hop. Do not walk arbitrary client-supplied
+    // XFF chains.
+    options.ForwardLimit = 1;
+
+    options.KnownProxies.Clear();
+    options.KnownNetworks.Clear();
+
+    foreach (var value in builder.Configuration
+                 .GetSection("ForwardedHeaders:KnownProxies")
+                 .Get<string[]>() ?? [])
+    {
+        if (IPAddress.TryParse(value, out var ip))
+            options.KnownProxies.Add(ip);
+    }
+
+    foreach (var value in builder.Configuration
+                 .GetSection("ForwardedHeaders:KnownNetworks")
+                 .Get<string[]>() ?? [])
+    {
+        if (TryParseCidr(value, out var network))
+            options.KnownNetworks.Add(network);
+    }
 });
 
 // ─── Authentication (Clerk JWT) ──────────────────────────────────────────────
@@ -263,16 +309,6 @@ builder.Services.AddScoped<SiteConfigHandler>();
 builder.Services.AddScoped<SiteHeroHandler>();
 
 // ─── MVC + global exception filter ───────────────────────────────────────────
-// PropertyNamingPolicy = null preserves DTO property names as-declared
-// (PascalCase). Frontend TypeScript types use PascalCase throughout, and
-// changing every type annotation and property access on the frontend would be
-// a much larger refactor than pinning the JSON naming policy here.
-/* builder.Services.AddControllers(options =>
-{options.Filters.Add<DomainExceptionFilter>();}).AddJsonOptions(opt =>
-    {
-        opt.JsonSerializerOptions.PropertyNamingPolicy = null;
-    }
-); */
 builder.Services.AddControllers(options =>
 {
     options.Filters.Add<DomainExceptionFilter>();
@@ -289,6 +325,7 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+app.UseForwardedHeaders();
 app.UseCors();
 app.UseHttpsRedirection();
 app.UseAuthentication();
@@ -296,3 +333,29 @@ app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
+
+static bool TryParseCidr(string? value, out Microsoft.AspNetCore.HttpOverrides.IPNetwork network)
+{
+    network = default!;
+
+    if (string.IsNullOrWhiteSpace(value))
+        return false;
+
+    var parts = value.Split('/', 2, StringSplitOptions.TrimEntries);
+    if (parts.Length != 2 ||
+        !IPAddress.TryParse(parts[0], out var prefix) ||
+        !int.TryParse(parts[1], out var prefixLength))
+    {
+        return false;
+    }
+
+    var maxPrefixLength = prefix.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+        ? 32
+        : 128;
+
+    if (prefixLength < 0 || prefixLength > maxPrefixLength)
+        return false;
+
+    network = new Microsoft.AspNetCore.HttpOverrides.IPNetwork(prefix, prefixLength);
+    return true;
+}

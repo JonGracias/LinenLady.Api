@@ -110,13 +110,21 @@ public partial interface ICustomerRepository
     /// (no other customer beat the recovering customer to it in the meantime),
     /// so the items return to the basket. Items that are no longer available
     /// silently drop — the customer sees them as expired in the next basket
-    /// load. Returns count of reservations recreated.</summary>
-    Task<int> CancelOrderAsync(int orderId, string newStatus); // 'Cancelled' | 'Failed'
+    /// load.
+    ///
+    /// Returns an OrderCancelResult (including the Square payment-link id so
+    /// the caller can revoke the link AFTER the DB commit), or null when the
+    /// UPDATE affected zero rows — i.e. the order was no longer in
+    /// PaymentPending because another writer (webhook, sweeper, customer)
+    /// won the race. The repository itself never calls Square.</summary>
+    Task<OrderCancelResult?> CancelOrderAsync(int orderId, string newStatus); // 'Cancelled' | 'Failed'
 
     /// <summary>Sweep: orders stuck in PaymentPending past <paramref name="timeoutHours"/>
     /// are cancelled and their items returned to baskets where possible.
-    /// Mirrors the existing ExpireReservationsAsync sweeper pattern.</summary>
-    Task<int> ExpireStaleOrdersAsync(int timeoutHours);
+    /// Mirrors the existing ExpireReservationsAsync sweeper pattern.
+    /// Returns one OrderCancelResult per order actually cancelled so the
+    /// handler can revoke the corresponding Square payment links.</summary>
+    Task<List<OrderCancelResult>> ExpireStaleOrdersAsync(int timeoutHours);
 }
 
 public partial class CustomerRepository
@@ -554,7 +562,7 @@ public partial class CustomerRepository
         }
     }
 
-    public async Task<int> CancelOrderAsync(int orderId, string newStatus)
+    public async Task<OrderCancelResult?> CancelOrderAsync(int orderId, string newStatus)
     {
         if (newStatus != "Cancelled" && newStatus != "Failed")
             throw new ArgumentException($"Invalid order status '{newStatus}'.");
@@ -566,21 +574,25 @@ public partial class CustomerRepository
         try
         {
             // Flip the order. If it's not in PaymentPending we don't touch it
-            // (already Paid or already Cancelled — idempotent).
-            var affected = await conn.ExecuteAsync(
+            // (already Paid or already Cancelled — idempotent). OUTPUT also
+            // hands back the Square payment-link id so the HANDLER can revoke
+            // the link after this transaction commits — DB state first,
+            // Square cleanup second, never the reverse.
+            var flipped = (await conn.QueryAsync<(int OrderId, string? SquarePaymentLinkId)>(
                 """
                 UPDATE cust.[Order]
                 SET    Status      = @NewStatus,
                        CancelledAt = SYSUTCDATETIME()
+                OUTPUT inserted.OrderId, inserted.SquarePaymentLinkId
                 WHERE  OrderId     = @OrderId
                   AND  Status      = 'PaymentPending';
                 """,
-                new { OrderId = orderId, NewStatus = newStatus }, tx);
+                new { OrderId = orderId, NewStatus = newStatus }, tx)).ToList();
 
-            if (affected == 0)
+            if (flipped.Count == 0)
             {
                 tx.Commit();
-                return 0;
+                return null;
             }
 
             // Recreate Active reservations for items that are still purchasable
@@ -611,7 +623,10 @@ public partial class CustomerRepository
                 new { OrderId = orderId }, tx);
 
             tx.Commit();
-            return recreated;
+            return new OrderCancelResult(
+                OrderId:               flipped[0].OrderId,
+                SquarePaymentLinkId:   flipped[0].SquarePaymentLinkId,
+                RecreatedReservations: recreated);
         }
         catch
         {
@@ -620,7 +635,7 @@ public partial class CustomerRepository
         }
     }
 
-    public async Task<int> ExpireStaleOrdersAsync(int timeoutHours)
+    public async Task<List<OrderCancelResult>> ExpireStaleOrdersAsync(int timeoutHours)
     {
         using var db = Connect();
 
@@ -636,12 +651,16 @@ public partial class CustomerRepository
             """,
             new { TimeoutHours = timeoutHours })).ToList();
 
-        var count = 0;
+        var cancelled = new List<OrderCancelResult>();
         foreach (var id in staleIds)
         {
-            await CancelOrderAsync(id, "Cancelled");
-            count++;
+            // Null = lost a race (webhook marked it Paid, or the customer
+            // cancelled it themselves between our SELECT and this call).
+            // Either way there's nothing for the sweeper to clean up.
+            var result = await CancelOrderAsync(id, "Cancelled");
+            if (result is not null)
+                cancelled.Add(result);
         }
-        return count;
+        return cancelled;
     }
 }

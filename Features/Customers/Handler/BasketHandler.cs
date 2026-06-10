@@ -342,12 +342,17 @@ public sealed class GetOrderByIdHandler
 public sealed class CancelOrderHandler
 {
     private readonly ICustomerRepository _repo;
+    private readonly ISquareService _square;
     private readonly ILogger<CancelOrderHandler> _log;
 
-    public CancelOrderHandler(ICustomerRepository repo, ILogger<CancelOrderHandler> log)
+    public CancelOrderHandler(
+        ICustomerRepository repo,
+        ISquareService square,
+        ILogger<CancelOrderHandler> log)
     {
-        _repo = repo;
-        _log  = log;
+        _repo   = repo;
+        _square = square;
+        _log    = log;
     }
 
     public async Task<OrderDto> HandleAsync(
@@ -405,11 +410,43 @@ public sealed class CancelOrderHandler
                     "can't be cancelled. Message Noemi for help.");
         }
 
-        // Hand off to the existing repo method. Returns the count of
-        // reservations recreated (informational — we don't surface it).
-        // If 0 rows are affected by the UPDATE inside, we lost a race;
-        // the post-read below detects which writer won.
-        await _repo.CancelOrderAsync(orderId, "Cancelled");
+        // Hand off to the existing repo method.
+        //
+        // Sequencing matters here and is deliberate (see #cancel-ordering):
+        //   1. The repo cancels the order in the DB. That transaction
+        //      COMMITS before we touch Square — local state is the source
+        //      of truth and must never depend on Square being reachable.
+        //   2. If we won the cancel (non-null result), we then revoke the
+        //      Square payment link best-effort.
+        //   3. A revoke failure is LOGGED AS AN ERROR but does not fail the
+        //      cancellation — the order is already cancelled; the stale link
+        //      is a known hazard the webhook handler now alerts on if anyone
+        //      actually pays it.
+        //
+        // If cancelResult is null we lost a race; the post-read below
+        // figures out who won. The sweeper revokes its own links, so we
+        // don't need to chase the link in that case.
+        var cancelResult = await _repo.CancelOrderAsync(orderId, "Cancelled");
+
+        if (cancelResult is not null &&
+            !string.IsNullOrWhiteSpace(cancelResult.SquarePaymentLinkId))
+        {
+            try
+            {
+                await _square.DeletePaymentLinkAsync(cancelResult.SquarePaymentLinkId, ct);
+                _log.LogInformation(
+                    "Square payment link {LinkId} revoked for cancelled order {OrderId}.",
+                    cancelResult.SquarePaymentLinkId, orderId);
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex,
+                    "Square payment-link revoke FAILED for cancelled order {OrderId} " +
+                    "(link {LinkId}). Order remains cancelled; the stale link can still " +
+                    "accept payment until manually deleted in the Square dashboard.",
+                    orderId, cancelResult.SquarePaymentLinkId);
+            }
+        }
 
         // Re-fetch to get the post-state. Three cases:
         //   1. Our cancel succeeded — Status = 'Cancelled', return it.
@@ -524,26 +561,66 @@ public sealed class AskNoemiHandler
 public sealed class ExpireStaleOrdersHandler
 {
     private readonly ICustomerRepository _repo;
+    private readonly ISquareService _square;
     private readonly ILogger<ExpireStaleOrdersHandler> _log;
     private readonly int _timeoutHours;
 
     public ExpireStaleOrdersHandler(
         ICustomerRepository repo,
+        ISquareService square,
         IConfiguration config,
         ILogger<ExpireStaleOrdersHandler> log)
     {
-        _repo = repo;
-        _log  = log;
-        // Tuneable so we can shorten in dev/QA; 24h matches Square's payment
-        // link expiry default. Configured in appsettings as Checkout:OrderTimeoutHours.
+        _repo   = repo;
+        _square = square;
+        _log    = log;
+        // Tuneable so we can shorten in dev/QA. NOTE: Square payment links
+        // do NOT expire on their own — this timeout is purely ours, which
+        // is exactly why each sweep revokes the link below. Configured in
+        // appsettings as Checkout:OrderTimeoutHours.
         _timeoutHours = config.GetValue<int?>("Checkout:OrderTimeoutHours") ?? 24;
     }
 
     public async Task<int> HandleAsync(CancellationToken ct)
     {
-        var count = await _repo.ExpireStaleOrdersAsync(_timeoutHours);
-        if (count > 0)
-            _log.LogInformation("Cancelled {Count} stale PaymentPending order(s).", count);
-        return count;
+        // DB first: every order in the returned list is ALREADY cancelled
+        // and committed by the time we see it here. Square cleanup is a
+        // best-effort second pass — a Square outage can delay link
+        // revocation but can never block or roll back a cancellation.
+        var cancelled = await _repo.ExpireStaleOrdersAsync(_timeoutHours);
+        if (cancelled.Count == 0)
+            return 0;
+
+        _log.LogInformation(
+            "Cancelled {Count} stale PaymentPending order(s).", cancelled.Count);
+
+        foreach (var order in cancelled)
+        {
+            if (string.IsNullOrWhiteSpace(order.SquarePaymentLinkId))
+                continue; // link generation failed at checkout — nothing to revoke
+
+            try
+            {
+                await _square.DeletePaymentLinkAsync(order.SquarePaymentLinkId, ct);
+                _log.LogInformation(
+                    "Square payment link {LinkId} revoked for swept order {OrderId}.",
+                    order.SquarePaymentLinkId, order.OrderId);
+            }
+            catch (Exception ex)
+            {
+                // Log loudly and keep sweeping — one bad link must not stop
+                // the rest of the batch. The next tick will NOT retry this
+                // link (the order is no longer PaymentPending), so this log
+                // line is the alert: the stale link can still take payment
+                // until deleted in the Square dashboard. The webhook
+                // handler's payment-after-cancel alert is the backstop.
+                _log.LogError(ex,
+                    "Square payment-link revoke FAILED for swept order {OrderId} " +
+                    "(link {LinkId}). Delete it manually in the Square dashboard.",
+                    order.OrderId, order.SquarePaymentLinkId);
+            }
+        }
+
+        return cancelled.Count;
     }
 }

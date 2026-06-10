@@ -134,3 +134,6 @@ logs/
 npm-debug.log*
 obj/Debug/net8.0/LinenLady.Api.AssemblyInfoInputs.cache
 obj/Debug/net8.0/LinenLady.Api.AssemblyInfo.cs
+
+Migrations*
+Migrations/

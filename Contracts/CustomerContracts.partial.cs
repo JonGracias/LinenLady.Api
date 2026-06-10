@@ -83,6 +83,19 @@ public record OrderDto(
     public List<OrderItemDto> Items { get; init; } = new();
 }
 
+/// <summary>
+/// Returned by CancelOrderAsync when the cancel actually flipped the row
+/// (null when the caller lost the race to the webhook or another canceller).
+/// Carries the Square payment-link id so the HANDLER layer can revoke the
+/// link best-effort after the DB commit — the repository never talks to
+/// Square. RecreatedReservations is informational (how many items went
+/// back into the customer's basket).
+/// </summary>
+public sealed record OrderCancelResult(
+    int     OrderId,
+    string? SquarePaymentLinkId,
+    int     RecreatedReservations);
+
 public record OrderItemDto(
     int     OrderItemId,
     int     OrderId,
