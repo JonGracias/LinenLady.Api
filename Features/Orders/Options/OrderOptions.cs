@@ -20,6 +20,6 @@ public sealed class OrdersOptions
     /// <summary>Display name for the recipient header. Cosmetic.</summary>
     public string RecipientName { get; set; } = "Noemi";
 
-    /// <summary>Public storefront origin used to build "view this order" links in the email body. e.g. "https://linenlady.net".</summary>
+    /// <summary>Public storefront origin used to build "view this order" links in the email body. e.g. "https://noemithelinenlady.net".</summary>
     public string StorefrontOrigin { get; set; } = "";
 }

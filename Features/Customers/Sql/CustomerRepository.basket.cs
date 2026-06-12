@@ -355,6 +355,14 @@ public partial class CustomerRepository
         if (req.ReservationIds is null || req.ReservationIds.Count == 0)
             throw new ArgumentException("At least one reservation must be selected.");
 
+        // Dedupe before the count comparison below. SQL's IN clause
+        // deduplicates implicitly, so a request like [5, 5] would return
+        // one row against a requested count of two and throw a
+        // ReservationConflictException with an EMPTY missing-ids list —
+        // failing a checkout that should have succeeded. A double-tapped
+        // submit button is enough to hit this.
+        var reservationIds = req.ReservationIds.Distinct().ToList();
+
         using var conn = (SqlConnection)Connect();
         await conn.OpenAsync();
         using var tx = conn.BeginTransaction(IsolationLevel.Serializable);
@@ -394,13 +402,13 @@ public partial class CustomerRepository
                   AND  r.Status         = 'Active'
                   AND  r.ExpiresAt      > SYSUTCDATETIME()
                 """,
-                new { req.ReservationIds, CustomerId = customerId },
+                new { ReservationIds = reservationIds, CustomerId = customerId },
                 tx)).ToList();
 
-            if (rows.Count != req.ReservationIds.Count)
+            if (rows.Count != reservationIds.Count)
             {
                 var found   = rows.Select(r => r.ReservationId).ToHashSet();
-                var missing = req.ReservationIds.Where(id => !found.Contains(id)).ToList();
+                var missing = reservationIds.Where(id => !found.Contains(id)).ToList();
                 throw new ReservationConflictException(
                     $"One or more items in your basket have expired or are no longer available: " +
                     $"reservation ids [{string.Join(", ", missing)}]. Refresh your basket and try again.");

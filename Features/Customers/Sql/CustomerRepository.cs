@@ -3,6 +3,7 @@ namespace LinenLady.API.Customers.Sql;
 using System.Data;
 using Dapper;
 using LinenLady.API.Contracts;
+using LinenLady.API.Customers.Handler;
 using Microsoft.Data.SqlClient;
 
 public partial interface ICustomerRepository
@@ -102,7 +103,14 @@ public partial class CustomerRepository : ICustomerRepository
         using var db = Connect();
         return await db.QueryFirstAsync<CustomerDto>(
             """
-            MERGE cust.Customer AS target
+            -- WITH (HOLDLOCK) is required for a race-safe MERGE upsert.
+            -- Without it, two concurrent /customers/sync calls for a brand-new
+            -- user (frontends double-fire sync: React StrictMode, tab focus)
+            -- can BOTH take the NOT MATCHED branch — duplicate row or a
+            -- unique-key violation → 500 on first sign-in. HOLDLOCK holds a
+            -- range lock across the match-check + insert so the second caller
+            -- waits and lands on the MATCHED/UPDATE path instead.
+            MERGE cust.Customer WITH (HOLDLOCK) AS target
             USING (SELECT @ClerkUserId AS ClerkUserId) AS source
                 ON target.ClerkUserId = source.ClerkUserId
             WHEN MATCHED THEN
@@ -173,16 +181,21 @@ public partial class CustomerRepository : ICustomerRepository
     {
         using var db = Connect();
 
-        if (req.IsDefault)
-        {
-            await db.ExecuteAsync(
-                "UPDATE cust.CustomerAddress SET IsDefault = 0 WHERE CustomerId = @CustomerId",
-                new { CustomerId = customerId });
-        }
-
         if (addressId.HasValue)
         {
-            return await db.QueryFirstAsync<CustomerAddressDto>(
+            // QueryFirstOrDefaultAsync, not QueryFirstAsync: when the WHERE
+            // matches zero rows (stale id, or an id belonging to another
+            // customer), the OUTPUT clause emits nothing and QueryFirstAsync
+            // would throw InvalidOperationException ("Sequence contains no
+            // elements") — an unhandled 500. Null here maps to
+            // AddressNotFoundException, which DomainExceptionFilter turns
+            // into a clean 404 without revealing whether the id exists.
+            //
+            // The other-rows IsDefault clear happens AFTER this update (and
+            // excludes the target row) so a rejected update has zero side
+            // effects — previously the clear ran first and a bad id would
+            // 404 with the customer's default already wiped.
+            var updated = await db.QueryFirstOrDefaultAsync<CustomerAddressDto>(
                 """
                 UPDATE cust.CustomerAddress
                 SET Label     = @Label,
@@ -203,6 +216,29 @@ public partial class CustomerRepository : ICustomerRepository
                 new { AddressId = addressId, CustomerId = customerId,
                       req.Label, req.Street1, req.Street2, req.City,
                       req.State, req.Zip, req.Country, req.IsDefault });
+
+            if (updated is null)
+                throw new AddressNotFoundException("Address not found.");
+
+            if (req.IsDefault)
+            {
+                await db.ExecuteAsync(
+                    """
+                    UPDATE cust.CustomerAddress
+                    SET IsDefault = 0
+                    WHERE CustomerId = @CustomerId AND AddressId <> @AddressId
+                    """,
+                    new { CustomerId = customerId, AddressId = addressId });
+            }
+
+            return updated;
+        }
+
+        if (req.IsDefault)
+        {
+            await db.ExecuteAsync(
+                "UPDATE cust.CustomerAddress SET IsDefault = 0 WHERE CustomerId = @CustomerId",
+                new { CustomerId = customerId });
         }
 
         return await db.QueryFirstAsync<CustomerAddressDto>(

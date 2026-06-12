@@ -28,8 +28,17 @@ public sealed record ContactRequest
     [StringLength(64)]
     public string? ProductSku { get; init; }
 
-    /// <summary>Honeypot. Real users never fill this; bots usually do. Must be empty.</summary>
-    [StringLength(0)]
+    /// <summary>
+    /// Honeypot. Real users never fill this; bots usually do.
+    ///
+    /// IMPORTANT: no validation attribute here, on purpose. With
+    /// [StringLength(0)], [ApiController] model validation rejected any
+    /// non-empty value with a 400 that NAMED this field — so the silent
+    /// fake-success path in ContactService never ran, and bots were told
+    /// exactly which field to leave blank. Validation-free, a filled
+    /// honeypot flows through to SubmitAsync, which logs it and returns a
+    /// success-shaped response without persisting or sending anything.
+    /// </summary>
     public string? Website { get; init; }
 }
 

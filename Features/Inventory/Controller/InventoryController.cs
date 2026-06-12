@@ -16,8 +16,18 @@ public sealed class InventoryController(
     UpdateItemHandler updateHandler,
     SoftDeleteItemHandler deleteHandler,
     CreateItemsHandler createHandler,
-    GetAvailabilityHandler availabilityHandler) : ControllerBase
+    GetAvailabilityHandler availabilityHandler,
+    IAuthorizationService authorization) : ControllerBase
 {
+    /// <summary>
+    /// True when the current caller satisfies the Admin policy (Clerk JWT
+    /// with org_id == Clerk:AdminOrgId). Used to gate which inventory
+    /// statuses are visible on the otherwise-anonymous read endpoints —
+    /// drafts must never be served to non-admin callers.
+    /// </summary>
+    private async Task<bool> IsAdminAsync()
+        => (await authorization.AuthorizeAsync(User, AuthPolicies.Admin)).Succeeded;
+
     // POST /items/drafts
     [Authorize(Policy = AuthPolicies.Admin)]
     [HttpPost("drafts")]
@@ -32,20 +42,33 @@ public sealed class InventoryController(
     }
 
     // GET /items  — public storefront
+    //
+    // SECURITY: this endpoint is anonymous, but `status` is an admin-grade
+    // filter. Non-admin callers are clamped to the published catalog —
+    // "active" and "featured" only. Requests for "draft" or "all" from a
+    // non-admin are coerced to "active" rather than rejected so a stale
+    // storefront query string degrades gracefully instead of breaking the
+    // shop page. Admin callers (valid Clerk JWT in the admin org) keep the
+    // full status set for the dashboard.
     [AllowAnonymous]
     [HttpGet]
     public async Task<IActionResult> GetItems(
         [FromQuery] int page = 1,
         [FromQuery] int limit = 10,
-        [FromQuery] string status = "all",
+        [FromQuery] string status = "active",
         [FromQuery] string? category = null,
         CancellationToken ct = default)
     {
+        var requested = (status ?? "active").Trim().ToLowerInvariant();
+
+        if (requested is "draft" or "all" && !await IsAdminAsync())
+            requested = "active";
+
         var (result, response) = await listHandler.Handle(new GetItemsQuery
         {
             Page = page,
             Limit = limit,
-            Status = status,
+            Status = requested,
             Category = category
         }, ct);
 
@@ -67,6 +90,10 @@ public sealed class InventoryController(
     }
 
     // GET /items/{id:int}  — public storefront
+    //
+    // Drafts 404 for non-admin callers — same response as a nonexistent id
+    // so draft ids aren't enumerable. Inactive (sold) items remain visible
+    // by direct link so old shares/order references still resolve.
     [AllowAnonymous]
     [HttpGet("{id:int}")]
     public async Task<IActionResult> GetById(int id, CancellationToken ct)
@@ -74,10 +101,14 @@ public sealed class InventoryController(
         if (id <= 0) return BadRequest("Invalid id.");
 
         var item = await repo.GetByKey(ItemKey.ById(id), ct);
-        return item is null ? NotFound("Item not found.") : Ok(item);
+        if (item is null || (item.IsDraft && !await IsAdminAsync()))
+            return NotFound("Item not found.");
+
+        return Ok(item);
     }
 
     // GET /items/sku/{sku}  — public storefront
+    // Same draft gate as GetById.
     [AllowAnonymous]
     [HttpGet("sku/{sku}")]
     public async Task<IActionResult> GetBySku(string sku, CancellationToken ct)
@@ -85,7 +116,10 @@ public sealed class InventoryController(
         if (string.IsNullOrWhiteSpace(sku)) return BadRequest("Invalid sku.");
 
         var item = await repo.GetByKey(ItemKey.BySku(sku), ct);
-        return item is null ? NotFound("Item not found.") : Ok(item);
+        if (item is null || (item.IsDraft && !await IsAdminAsync()))
+            return NotFound("Item not found.");
+
+        return Ok(item);
     }
 
     // PATCH /items/{id:int}

@@ -1,10 +1,12 @@
 namespace LinenLady.API.Contracts;
 
+using System.Text.Json.Serialization;
+
 /// <summary>
 /// Per-item availability returned by POST /api/inventory/availability.
 /// Items not in the response are implicitly Available.
 /// </summary>
-     
+
 
 public sealed record ItemAvailabilityDto
 {
@@ -20,6 +22,15 @@ public sealed record ItemAvailabilityDto
     ///   "YourPendingPayment" - the caller themselves is paying
     /// </summary>
     public string State { get; set; } = "";
+
+    /// <summary>
+    /// Internal only — which customer holds the blocking reservation/order.
+    /// Used by GetAvailabilityHandler to personalize State into
+    /// YourBasket / YourPendingPayment for the caller. NEVER serialized:
+    /// the availability endpoint is anonymous, and exposing customer ids
+    /// (and which items they're shopping) would be an information leak.
+    /// </summary>
+    [JsonIgnore]
     public int?   BlockingCustomerId  { get; init; }
 }
 
