@@ -100,7 +100,6 @@ builder.Services.AddCors(options =>
     });
 });
 
-
 // ─── Forwarded headers ───────────────────────────────────────────────────────
 // Contact rate limiting must use HttpContext.Connection.RemoteIpAddress, not a
 // raw X-Forwarded-For header read in a controller. This middleware rewrites
