@@ -137,3 +137,5 @@ obj/Debug/net8.0/LinenLady.Api.AssemblyInfo.cs
 
 Migrations*
 Migrations/
+
+secrets.json
