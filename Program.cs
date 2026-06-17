@@ -105,6 +105,8 @@ builder.Services.AddCors(options =>
 // raw X-Forwarded-For header read in a controller. This middleware rewrites
 // RemoteIpAddress only when the immediate peer is one of the trusted proxies or
 // networks configured below.
+// 
+// need to fix this 
 //
 // Configure in appsettings/portal as needed:
 //   ForwardedHeaders:KnownProxies:0  = "<single proxy IP>"
@@ -175,6 +177,17 @@ builder.Services
             NameClaimType            = "sub",
         };
     });
+
+// ─── Turnstile ───────────────────────────────────────────────────────────
+builder.Services
+       .AddOptions<TurnstileOptions>()
+       .Bind(builder.Configuration.GetSection(TurnstileOptions.SectionName))
+       .Validate(o => !o.Enabled || !string.IsNullOrWhiteSpace(o.SecretKey),
+           "Turnstile:SecretKey is required when Turnstile is enabled")
+       .ValidateOnStart();
+
+   builder.Services.AddHttpClient("turnstile");
+   builder.Services.AddScoped<ITurnstileVerifier, TurnstileVerifier>();
 
 // ─── Authorization ───────────────────────────────────────────────────────────
 // Two policies:

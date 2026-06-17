@@ -40,6 +40,17 @@ public sealed record ContactRequest
     /// success-shaped response without persisting or sending anything.
     /// </summary>
     public string? Website { get; init; }
+
+    /// <summary>
+    /// Cloudflare Turnstile token produced by the widget on the contact form.
+    ///
+    /// No validation attribute — same reasoning as the honeypot. We do NOT want
+    /// [ApiController] to reject a missing token with a field-naming 400; the
+    /// verification is done inside ContactService so we control the message and
+    /// the failure maps to our friendly banner. A null/empty token fails
+    /// verification and is rejected as a ContactValidationException (400).
+    /// </summary>
+    public string? TurnstileToken { get; init; }
 }
 
 public sealed record ContactResponse(

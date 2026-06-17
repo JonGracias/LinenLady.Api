@@ -19,12 +19,14 @@ public interface IContactService
 public sealed class ContactService(
     IContactRepository    repo,
     IEmailSender          email,
+    ITurnstileVerifier    turnstile,
     IOptions<ContactOptions> options,
     ILogger<ContactService>  log) : IContactService
 {
-    private readonly IContactRepository _repo  = repo;
-    private readonly IEmailSender       _email = email;
-    private readonly ContactOptions     _opts  = options.Value;
+    private readonly IContactRepository _repo      = repo;
+    private readonly IEmailSender       _email     = email;
+    private readonly ITurnstileVerifier _turnstile = turnstile;
+    private readonly ContactOptions     _opts      = options.Value;
     private readonly ILogger<ContactService> _log = log;
 
     public async Task<ContactResponse> SubmitAsync(
@@ -39,6 +41,16 @@ public sealed class ContactService(
             _log.LogInformation("Honeypot tripped from {Ip}", ip);
             return new ContactResponse(0, "Thanks — your message has been sent.");
         }
+
+        // 1.5 Bot check — verify the Cloudflare Turnstile token before doing any
+        //      work. Runs AFTER the honeypot so obvious bots are dropped without
+        //      a siteverify round-trip. A missing/invalid token fails closed as a
+        //      400 (ContactValidationException → friendly banner). Skipped only
+        //      when Turnstile is disabled in config.
+        var human = await _turnstile.VerifyAsync(req.TurnstileToken, ct);
+        if (!human)
+            throw new ContactValidationException(
+                "We couldn't verify you're human. Please complete the check and try again.");
 
         // 2. Normalize + sanity-check inputs beyond DataAnnotations.
         var fromEmail = req.FromEmail.Trim().ToLowerInvariant();
