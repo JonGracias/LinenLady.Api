@@ -76,7 +76,8 @@ public sealed class UpdateItemHandler
 
             if (aiResult is not null)
             {
-                if (request.Ai.Fields.Contains("name") && aiResult.Name is not null)
+                // The admin UI sends this field as "title"; "name" kept for older callers.
+                if ((request.Ai.Fields.Contains("title") || request.Ai.Fields.Contains("name")) && aiResult.Name is not null)
                     name = aiResult.Name;
 
                 if (request.Ai.Fields.Contains("description") && aiResult.Description is not null)

@@ -55,7 +55,8 @@ public sealed class AiRewriteService : IAiRewriteService
         sb.AppendLine("Return JSON with ONLY the fields being rewritten:");
         sb.AppendLine("{");
 
-        if (input.Fields.Contains("name"))
+        // The admin UI labels this field "title"; accept "name" too for older callers.
+        if (input.Fields.Contains("title") || input.Fields.Contains("name"))
             sb.AppendLine(@"  ""name"": ""rewritten product name"",");
 
         if (input.Fields.Contains("description"))

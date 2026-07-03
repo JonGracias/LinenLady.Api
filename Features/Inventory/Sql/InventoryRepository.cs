@@ -148,14 +148,30 @@ public sealed partial class InventoryRepository : IInventoryRepository
         CancellationToken ct)
     {
         var mode = StatusToMode(query.Status);
-        var category = string.IsNullOrWhiteSpace(query.Category) ? null : query.Category.Trim().ToLowerInvariant();
-        var hasCategory = category is not null;
 
-        const string categoryJoin = """
-            INNER JOIN inv.InventoryAiMeta m_cat
-                ON m_cat.InventoryId = i.InventoryId
-               AND LOWER(m_cat.KeywordsJson) LIKE @CategoryPattern
-            """;
+        // A category may carry several synonym terms, comma-separated in the
+        // query param (e.g. "teacup,saucer,tea set"). An item matches if ANY
+        // term appears in its AI KeywordsJson — this keeps the filter tolerant
+        // of how the AI happened to word an item's keywords. Terms are
+        // lowercased and passed as parameters (@CategoryPattern0..N).
+        var categoryTerms = (query.Category ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(t => t.ToLowerInvariant())
+            .Distinct()
+            .ToArray();
+        var hasCategory = categoryTerms.Length > 0;
+
+        var categoryPredicate = string.Join(
+            " OR ",
+            categoryTerms.Select((_, idx) => $"LOWER(m_cat.KeywordsJson) LIKE @CategoryPattern{idx}"));
+
+        var categoryJoin = hasCategory
+            ? $"""
+                INNER JOIN inv.InventoryAiMeta m_cat
+                    ON m_cat.InventoryId = i.InventoryId
+                   AND ({categoryPredicate})
+                """
+            : "";
 
         const string statusClause = """
             i.IsDeleted = 0
@@ -170,7 +186,7 @@ public sealed partial class InventoryRepository : IInventoryRepository
         var countSql = $"""
             SELECT COUNT_BIG(1)
             FROM inv.Inventory i
-            {(hasCategory ? categoryJoin : "")}
+            {categoryJoin}
             WHERE {statusClause};
             """;
 
@@ -178,7 +194,7 @@ public sealed partial class InventoryRepository : IInventoryRepository
             WITH page AS (
                 SELECT i.InventoryId
                 FROM inv.Inventory i
-                {(hasCategory ? categoryJoin : "")}
+                {categoryJoin}
                 WHERE {statusClause}
                 ORDER BY i.InventoryId DESC
                 OFFSET @Offset ROWS
@@ -200,8 +216,8 @@ public sealed partial class InventoryRepository : IInventoryRepository
         using (var countCmd = new SqlCommand(countSql, conn) { CommandTimeout = 30 })
         {
             countCmd.Parameters.AddWithValue("@Mode", mode);
-            if (hasCategory)
-                countCmd.Parameters.AddWithValue("@CategoryPattern", $"%{category}%");
+            for (var idx = 0; idx < categoryTerms.Length; idx++)
+                countCmd.Parameters.AddWithValue($"@CategoryPattern{idx}", $"%{categoryTerms[idx]}%");
 
             var scalar = await countCmd.ExecuteScalarAsync(ct);
             totalCount = scalar is null or DBNull ? 0L : Convert.ToInt64(scalar);
@@ -222,8 +238,8 @@ public sealed partial class InventoryRepository : IInventoryRepository
         cmd.Parameters.AddWithValue("@Mode",   mode);
         cmd.Parameters.AddWithValue("@Limit",  limit);
         cmd.Parameters.AddWithValue("@Offset", offset);
-        if (hasCategory)
-            cmd.Parameters.AddWithValue("@CategoryPattern", $"%{category}%");
+        for (var idx = 0; idx < categoryTerms.Length; idx++)
+            cmd.Parameters.AddWithValue($"@CategoryPattern{idx}", $"%{categoryTerms[idx]}%");
 
         using var reader = await cmd.ExecuteReaderAsync(ct);
 
