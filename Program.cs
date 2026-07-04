@@ -305,6 +305,9 @@ builder.Services
 
 builder.Services.AddScoped<OrderPaidEmailComposer>();
 
+// ── Orders: admin back-office ──────────────────────────────────────
+builder.Services.AddScoped<LinenLady.API.Features.Orders.Handler.AdminOrdersHandler>();
+
 // Square
 builder.Services.AddHttpClient("square");
 builder.Services.AddScoped<ISquareService, SquareService>();

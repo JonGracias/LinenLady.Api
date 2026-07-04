@@ -81,6 +81,14 @@ public record OrderDto(
 )
 {
     public List<OrderItemDto> Items { get; init; } = new();
+
+    // Fulfillment checkpoints (2026-07-04_order_fulfillment.sql). Init-props
+    // rather than constructor params so existing SELECTs that don't include
+    // the columns keep materializing unchanged; only queries that select the
+    // columns populate them (currently the /api/admin/orders endpoints).
+    public DateTime? ShippedAt   { get; init; }
+    public DateTime? DeliveredAt { get; init; }
+    public DateTime? ReturnedAt  { get; init; }
 }
 
 /// <summary>
