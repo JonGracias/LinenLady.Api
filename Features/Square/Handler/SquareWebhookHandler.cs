@@ -22,28 +22,67 @@
 namespace LinenLady.API.Square.Handler;
 
 using System.Text.Json;
+using LinenLady.API.Blob;
+using LinenLady.API.Blob.Options;
 using LinenLady.API.Contracts;
 using LinenLady.API.Customers.Sql;
 using LinenLady.API.Features.Email;
 using LinenLady.API.Features.Orders.Email;
+using LinenLady.API.Inventory.Images.Sql;
+using Microsoft.Extensions.Options;
 
 public sealed class SquareWebhookHandler
 {
     private readonly ICustomerRepository       _repo;
     private readonly IEmailSender              _emailSender;
     private readonly OrderPaidEmailComposer    _emailComposer;
+    private readonly IInventoryImagesQuery     _imagesQuery;
+    private readonly BlobStorageOptions        _blobOptions;
     private readonly ILogger<SquareWebhookHandler> _log;
 
     public SquareWebhookHandler(
         ICustomerRepository       repo,
         IEmailSender              emailSender,
         OrderPaidEmailComposer    emailComposer,
+        IInventoryImagesQuery     imagesQuery,
+        IOptions<BlobStorageOptions> blobOptions,
         ILogger<SquareWebhookHandler> log)
     {
         _repo          = repo;
         _emailSender   = emailSender;
         _emailComposer = emailComposer;
+        _imagesQuery   = imagesQuery;
+        _blobOptions   = blobOptions.Value;
         _log           = log;
+    }
+
+    /// <summary>
+    /// Absolute public URL of each order item's primary photo, keyed by
+    /// InventoryId. Best-effort: any failure returns an empty map and the
+    /// emails render text-only rather than blocking the send.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<int, string>> LoadItemImageUrlsAsync(
+        OrderDto order, CancellationToken ct)
+    {
+        try
+        {
+            var ids   = order.Items.Select(i => i.InventoryId).Distinct().ToList();
+            var paths = await _imagesQuery.GetPrimaryImagePaths(ids, ct);
+
+            return paths.ToDictionary(
+                kv => kv.Key,
+                kv => BlobSas.BuildPublicUrl(
+                    _blobOptions.ConnectionString,
+                    _blobOptions.ImageContainerName,
+                    kv.Value.TrimStart('/')));
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex,
+                "Could not load item images for order {OrderId} emails (non-fatal — sending without photos).",
+                order.OrderId);
+            return new Dictionary<int, string>();
+        }
     }
 
     public async Task HandleAsync(string rawBody, CancellationToken ct)
@@ -291,9 +330,15 @@ public sealed class SquareWebhookHandler
         if (string.IsNullOrWhiteSpace(customerName))
             customerName = customer.Email;
 
+        // Primary photos for the item rows — shared by both emails below.
+        var itemImages = await LoadItemImageUrlsAsync(paid, ct);
+
+        // Two sends under the one claimed sentinel: Noemi's notification and
+        // the customer's confirmation. Each send failure is caught separately
+        // so one leg failing doesn't suppress the other.
         try
         {
-            var message = _emailComposer.Build(paid, customer.Email, customerName);
+            var message = _emailComposer.Build(paid, customer.Email, customerName, itemImages);
             var providerId = await _emailSender.SendAsync(message, ct);
 
             _log.LogInformation(
@@ -304,6 +349,23 @@ public sealed class SquareWebhookHandler
         {
             _log.LogWarning(ex,
                 "Order-paid email send failed for order {OrderId} (non-fatal — order still marked Paid).",
+                paid.OrderId);
+        }
+
+        try
+        {
+            var confirmation = _emailComposer.BuildCustomerConfirmation(
+                paid, customer.Email, customerName, itemImages);
+            var providerId = await _emailSender.SendAsync(confirmation, ct);
+
+            _log.LogInformation(
+                "Customer order-confirmation email sent for order {OrderId} (provider id {ProviderId}).",
+                paid.OrderId, providerId);
+        }
+        catch (EmailSendException ex)
+        {
+            _log.LogWarning(ex,
+                "Customer order-confirmation email failed for order {OrderId} (non-fatal — order still marked Paid).",
                 paid.OrderId);
         }
     }

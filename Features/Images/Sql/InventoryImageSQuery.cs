@@ -1,3 +1,4 @@
+using Dapper;
 using LinenLady.API.Contracts;
 using Microsoft.Data.SqlClient;
 
@@ -60,5 +61,34 @@ public sealed class InventoryImagesQuery : IInventoryImagesQuery
         }
 
         return images;
+    }
+
+    public async Task<Dictionary<int, string>> GetPrimaryImagePaths(
+        IReadOnlyCollection<int> inventoryIds, CancellationToken ct)
+    {
+        if (inventoryIds.Count == 0) return new Dictionary<int, string>();
+
+        // One row per item: the primary image, falling back to the first by
+        // sort order when nothing is flagged primary. Dapper expands @Ids.
+        const string sql = """
+        SELECT InventoryId, ImagePath
+        FROM (
+            SELECT InventoryId, ImagePath,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY InventoryId
+                       ORDER BY IsPrimary DESC, SortOrder, ImageId) AS rn
+            FROM inv.InventoryImage
+            WHERE InventoryId IN @Ids
+        ) ranked
+        WHERE rn = 1;
+        """;
+
+        using var conn = new SqlConnection(_connStr);
+        await conn.OpenAsync(ct);
+
+        var rows = await conn.QueryAsync<(int InventoryId, string ImagePath)>(
+            new CommandDefinition(sql, new { Ids = inventoryIds }, cancellationToken: ct));
+
+        return rows.ToDictionary(r => r.InventoryId, r => r.ImagePath);
     }
 }

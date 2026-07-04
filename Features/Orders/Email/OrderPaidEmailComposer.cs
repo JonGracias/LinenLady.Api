@@ -29,13 +29,15 @@ public sealed class OrderPaidEmailComposer(
     /// <param name="order">Fully hydrated order — must include Items and shipping snapshot.</param>
     /// <param name="customerEmail">For Reply-To, so Noemi can reply straight to the buyer.</param>
     /// <param name="customerName">Buyer's display name for the body.</param>
+    /// <param name="itemImageUrls">Absolute primary-image URL per InventoryId; items without one render text-only.</param>
     public EmailMessage Build(
         OrderDto order,
         string   customerEmail,
-        string   customerName)
+        string   customerName,
+        IReadOnlyDictionary<int, string>? itemImageUrls = null)
     {
         var subject = BuildSubject(order);
-        var (html, text) = RenderBody(order, customerName, customerEmail);
+        var (html, text) = RenderBody(order, customerName, customerEmail, itemImageUrls);
 
         return new EmailMessage(
             ToEmail:      _orders.RecipientEmail,
@@ -49,6 +51,107 @@ public sealed class OrderPaidEmailComposer(
             // email uses for inquiries.
             ReplyToEmail: customerEmail,
             ReplyToName:  customerName);
+    }
+
+    /// <summary>
+    /// Build the order confirmation sent to the CUSTOMER after payment.
+    /// Reply-To points at Noemi so a reply starts a normal conversation.
+    /// </summary>
+    public EmailMessage BuildCustomerConfirmation(
+        OrderDto order,
+        string   customerEmail,
+        string   customerName,
+        IReadOnlyDictionary<int, string>? itemImageUrls = null)
+    {
+        var total   = $"${order.AmountCents / 100m:0.00}";
+        var subject = $"Your Linen Lady order is confirmed — Order #{order.OrderId} ({total})";
+
+        // ── Plaintext ───────────────────────────────────────────────
+        var sb = new StringBuilder();
+        sb.AppendLine($"Thank you for your order, {customerName}!");
+        sb.AppendLine();
+        sb.AppendLine($"Order #{order.OrderId} is confirmed and paid ({total}).");
+        sb.AppendLine();
+        sb.AppendLine("Your pieces:");
+        foreach (var i in order.Items)
+        {
+            var sku = string.IsNullOrWhiteSpace(i.ItemSku) ? "" : $" (SKU {i.ItemSku})";
+            sb.AppendLine($"  • {i.ItemName}{sku} — ${i.UnitPriceCents / 100m:0.00}");
+        }
+        sb.AppendLine();
+        sb.AppendLine("Shipping to:");
+        sb.AppendLine($"  {order.ShipStreet1}");
+        if (!string.IsNullOrWhiteSpace(order.ShipStreet2))
+            sb.AppendLine($"  {order.ShipStreet2}");
+        sb.AppendLine($"  {order.ShipCity}, {order.ShipState} {order.ShipZip}");
+        sb.AppendLine();
+        if (!string.IsNullOrWhiteSpace(_orders.StorefrontOrigin))
+        {
+            sb.AppendLine($"View your order: {_orders.StorefrontOrigin.TrimEnd('/')}/basket?tab=orders");
+            sb.AppendLine();
+        }
+        sb.AppendLine("Noemi will follow up with shipping details. Questions?");
+        sb.AppendLine("Just reply to this email.");
+
+        // ── HTML ────────────────────────────────────────────────────
+        var safeName  = WebUtility.HtmlEncode(customerName);
+        var itemsHtml = RenderItemsHtml(order, itemImageUrls);
+
+        var addrHtml = new StringBuilder();
+        addrHtml.Append(WebUtility.HtmlEncode(order.ShipStreet1 ?? "")).Append("<br>");
+        if (!string.IsNullOrWhiteSpace(order.ShipStreet2))
+            addrHtml.Append(WebUtility.HtmlEncode(order.ShipStreet2)).Append("<br>");
+        addrHtml.Append(WebUtility.HtmlEncode(order.ShipCity ?? "")).Append(", ")
+                .Append(WebUtility.HtmlEncode(order.ShipState ?? "")).Append(' ')
+                .Append(WebUtility.HtmlEncode(order.ShipZip ?? ""));
+
+        var orderLinkBlock = string.IsNullOrWhiteSpace(_orders.StorefrontOrigin)
+            ? ""
+            : $"""
+              <p style="margin-top:18px;"><a href="{_orders.StorefrontOrigin.TrimEnd('/')}/basket?tab=orders" style="color:#9b2c3d;">View your order →</a></p>
+              """;
+
+        var html = $"""
+            <div style="font-family:Georgia,serif;max-width:560px;color:#3a342e;">
+              <p style="font-size:17px;margin:0 0 6px;">Thank you for your order, {safeName}.</p>
+              <p style="color:#6b6358;font-size:13px;margin:0;">
+                Order <strong>#{order.OrderId}</strong> is confirmed and paid.
+              </p>
+
+              <hr style="border:none;border-top:1px solid #d8cfc4;margin:14px 0;">
+
+              <p style="color:#6b6358;font-size:13px;margin-bottom:6px;">Your pieces</p>
+              {itemsHtml}
+
+              <p style="margin-top:14px;font-size:15px;">
+                <strong>Total: {total}</strong>
+              </p>
+
+              <p style="color:#6b6358;font-size:13px;margin-top:18px;margin-bottom:4px;">Shipping to</p>
+              <p style="line-height:1.5;margin:0;">{addrHtml}</p>
+
+              {orderLinkBlock}
+
+              <hr style="border:none;border-top:1px solid #d8cfc4;margin:18px 0;">
+
+              <p style="color:#6b6358;font-size:12px;">
+                Noemi will follow up with shipping details. Questions? Just reply
+                to this email — it goes straight to her.
+              </p>
+            </div>
+            """;
+
+        return new EmailMessage(
+            ToEmail:      customerEmail,
+            ToName:       customerName,
+            FromEmail:    _contact.SenderEmail,
+            FromName:     _contact.SenderBrand,
+            Subject:      subject,
+            HtmlBody:     html,
+            TextBody:     sb.ToString(),
+            // Replies go to Noemi, mirroring the contact-form affordance.
+            ReplyToEmail: _orders.RecipientEmail,
+            ReplyToName:  _orders.RecipientName);
     }
 
     /// <summary>
@@ -177,8 +280,58 @@ public sealed class OrderPaidEmailComposer(
         return $"Linen Lady — Order #{order.OrderId} paid ({total})";
     }
 
+    /// <summary>
+    /// Items as an HTML table — primary photo (64px) beside name/SKU/price
+    /// when a URL is available, text-only row otherwise. Shared by both the
+    /// Noemi and customer emails so the two stay visually consistent.
+    /// </summary>
+    private static string RenderItemsHtml(
+        OrderDto order, IReadOnlyDictionary<int, string>? itemImageUrls)
+    {
+        var rows = string.Join("", order.Items.Select(i =>
+        {
+            var skuHtml = string.IsNullOrWhiteSpace(i.ItemSku)
+                ? ""
+                : $"<br><span style='color:#6b6358;font-size:12px;'>SKU {WebUtility.HtmlEncode(i.ItemSku)}</span>";
+
+            var imgCell = "";
+            if (itemImageUrls is not null &&
+                itemImageUrls.TryGetValue(i.InventoryId, out var url) &&
+                !string.IsNullOrWhiteSpace(url))
+            {
+                var safeUrl = WebUtility.HtmlEncode(url);
+                imgCell = $"""
+                    <td style="padding:6px 10px 6px 0;width:72px;vertical-align:top;">
+                      <img src="{safeUrl}" alt="{WebUtility.HtmlEncode(i.ItemName)}"
+                           width="64" height="64"
+                           style="width:64px;height:64px;object-fit:cover;border-radius:4px;display:block;">
+                    </td>
+                    """;
+            }
+
+            return $"""
+                <tr>
+                  {imgCell}
+                  <td style="padding:6px 0;vertical-align:top;line-height:1.5;">
+                    {WebUtility.HtmlEncode(i.ItemName)}{skuHtml}
+                  </td>
+                  <td style="padding:6px 0 6px 12px;vertical-align:top;white-space:nowrap;text-align:right;">
+                    <strong>${i.UnitPriceCents / 100m:0.00}</strong>
+                  </td>
+                </tr>
+                """;
+        }));
+
+        return $"""
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">
+              {rows}
+            </table>
+            """;
+    }
+
     private (string html, string text) RenderBody(
-        OrderDto order, string customerName, string customerEmail)
+        OrderDto order, string customerName, string customerEmail,
+        IReadOnlyDictionary<int, string>? itemImageUrls = null)
     {
         // ── Plaintext ───────────────────────────────────────────────
         var sb = new StringBuilder();
@@ -231,13 +384,7 @@ public sealed class OrderPaidEmailComposer(
             ? null
             : WebUtility.HtmlEncode(order.CustomerNotes).Replace("\n", "<br>");
 
-        var itemsHtml = string.Join("", order.Items.Select(i =>
-        {
-            var skuHtml = string.IsNullOrWhiteSpace(i.ItemSku)
-                ? ""
-                : $" <span style='color:#6b6358;'>(SKU {WebUtility.HtmlEncode(i.ItemSku)})</span>";
-            return $"<li>{WebUtility.HtmlEncode(i.ItemName)}{skuHtml} — <strong>${i.UnitPriceCents / 100m:0.00}</strong></li>";
-        }));
+        var itemsHtml = RenderItemsHtml(order, itemImageUrls);
 
         var addrHtml = new StringBuilder();
         addrHtml.Append(WebUtility.HtmlEncode(order.ShipLabel ?? "")).Append("<br>");
@@ -274,8 +421,8 @@ public sealed class OrderPaidEmailComposer(
 
               <hr style="border:none;border-top:1px solid #d8cfc4;margin:12px 0;">
 
-              <p style="color:#6b6358;font-size:13px;margin-bottom:4px;">Items</p>
-              <ul style="margin:0;padding-left:18px;line-height:1.6;">{itemsHtml}</ul>
+              <p style="color:#6b6358;font-size:13px;margin-bottom:6px;">Items</p>
+              {itemsHtml}
 
               <p style="margin-top:14px;font-size:15px;">
                 <strong>Total: ${order.AmountCents / 100m:0.00}</strong>
