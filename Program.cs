@@ -38,6 +38,7 @@ using LinenLady.API.Features.Orders.Email;
 using Microsoft.AspNetCore.HttpOverrides;
 using System.Net;
 
+
 var builder = WebApplication.CreateBuilder(args);
 
 // ─── Connection string fallback ──────────────────────────────────────────────
