@@ -123,7 +123,10 @@ public partial class SquareService : ISquareService
             },
             checkout_options = new
             {
-                redirect_url             = $"{_checkoutBaseUrl}/shop/reservation/{reservationId}/confirmed",
+                // Land the buyer on their orders list — the webhook flips the
+                // order to Paid moments later. (A dedicated /confirmed page
+                // never existed; this route does.)
+                redirect_url             = $"{_checkoutBaseUrl}/basket?tab=orders",
                 ask_for_shipping_address = true,
             },
             pre_populated_data = new
